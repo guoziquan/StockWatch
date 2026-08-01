@@ -1,5 +1,6 @@
 #include "mainwindow.h"
-#include "klinedialog.h"
+#include "stockchartwindow.h"
+#include "reportgenerator.h"
 
 #include <QTableWidget>
 #include <QHeaderView>
@@ -26,12 +27,12 @@
 #include <QColor>
 #include <QStandardPaths>
 #include <QFile>
-#include <QFrame>
+#include <QMouseEvent>
+#include <QEvent>
 
 // ---------- 常量 ----------
 static const QString API_HOST = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 
-// 从 stocks.json 读取初始自选股（不存在则用硬编码兜底）
 static QStringList loadDefaultStocks()
 {
     QFile f(QStringLiteral("stocks.json"));
@@ -51,11 +52,10 @@ static QStringList loadDefaultStocks()
         ? QStringList{"002555", "002558", "002602", "002517", "603444", "300533"}
         : result;
 }
-static const QColor COLOR_UP(0xff, 0x4d, 0x5e);    // 红涨
-static const QColor COLOR_DOWN(0x2e, 0xe6, 0xa8);  // 绿跌
-static const QColor COLOR_FLAT(0x8f, 0xa3, 0xc0);  // 平
+static const QColor COLOR_UP(0xff, 0x4d, 0x5e);
+static const QColor COLOR_DOWN(0x2e, 0xe6, 0xa8);
+static const QColor COLOR_FLAT(0x8f, 0xa3, 0xc0);
 static const QColor COLOR_BG(0x0b, 0x12, 0x20);
-static const QColor COLOR_CARD(0x13, 0x1f, 0x33);
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -66,15 +66,63 @@ MainWindow::MainWindow(QWidget *parent)
     buildUi();
     updateMarketStatus();
 
-    // 定时刷新默认30秒）
-    m_timer->setInterval(30 * 1000);
+    // 定时刷新
+    m_timer->setInterval(m_currentIntervalSecs * 1000);
     connect(m_timer, &QTimer::timeout, this, &MainWindow::refresh);
     m_timer->start();
+
+    // 倒计时
+    m_countdownTimer = new QTimer(this);
+    m_countdownTimer->setInterval(1000);
+    connect(m_countdownTimer, &QTimer::timeout, this, [this]() {
+        m_countdownValue--;
+        if (m_countdownValue < 0) m_countdownValue = 0;
+        m_countdownLabel->setText(
+            QStringLiteral("下次刷新: %1秒")
+                .arg(m_countdownValue, 2, 10, QChar('0')));
+    });
+    m_countdownTimer->start();
+
+    // 报告生成器 + 午夜调度
+    m_reporter = new ReportGenerator(m_net, this);
+    connect(m_reporter, &ReportGenerator::reportReady, this, [this](const QString &path) {
+        m_statusLabel->setText(QStringLiteral("报告已生成: %1").arg(path));
+    });
+    connect(m_reporter, &ReportGenerator::allDone, this, [this](int count) {
+        m_statusLabel->setText(QStringLiteral("今日报告生成完毕，共%1份").arg(count));
+    });
+
+    m_lastReportDate = QDate::currentDate();
+    m_reportTimer = new QTimer(this);
+    m_reportTimer->setInterval(60 * 1000);
+    connect(m_reportTimer, &QTimer::timeout, this, [this]() {
+        QDate today = QDate::currentDate();
+        if (today > m_lastReportDate) {
+            generateReports();
+            m_lastReportDate = today;
+        }
+    });
+    m_reportTimer->start();
 
     refresh();
 }
 
-// ---------- UI ----------
+// ---------- 事件过滤器：代码/名称列手型光标 ----------
+bool MainWindow::eventFilter(QObject *obj, QEvent *ev)
+{
+    if (obj == m_table->viewport() && ev->type() == QEvent::MouseMove) {
+        QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+        QModelIndex idx = m_table->indexAt(me->pos());
+        if (idx.isValid() && (idx.column() == 0 || idx.column() == 1))
+            m_table->viewport()->setCursor(Qt::PointingHandCursor);
+        else
+            m_table->viewport()->setCursor(Qt::ArrowCursor);
+    }
+    return QMainWindow::eventFilter(obj, ev);
+}
+
+// ==================== UI 构建 ====================
+
 void MainWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("冰川 · A股行情监控"));
@@ -86,49 +134,46 @@ void MainWindow::buildUi()
     setCentralWidget(central);
 
     auto *root = new QVBoxLayout(central);
-    root->setContentsMargins(14, 12, 14, 10);
-    root->setSpacing(8);
+    root->setContentsMargins(14, 10, 14, 8);
+    root->setSpacing(6);
 
-    // 顶部标题栏
+    // ===== ① 顶部摘要栏 =====
     auto *topBar = new QHBoxLayout;
-    auto *title = new QLabel(QStringLiteral("行情监控"), central);
-    title->setStyleSheet("font-size:18px;font-weight:bold;color:#4da3ff;");
-    m_mktLabel = new QLabel(QStringLiteral("--"), central);
-    m_mktLabel->setStyleSheet("color:#8fa3c0;font-size:12px;");
-    m_refreshTimeLabel = new QLabel(QStringLiteral("上次刷新: --"), central);
-    m_refreshTimeLabel->setStyleSheet("color:#8fa3c0;font-size:12px;margin-left:12px;");
-    topBar->addWidget(title);
-    topBar->addStretch();
-    topBar->addWidget(m_mktLabel);
-    topBar->addWidget(m_refreshTimeLabel);
-    root->addLayout(topBar);
+    topBar->setSpacing(14);
 
-    // ---- 大盘指数浮动面板 ----
-    m_indexPanel = new QFrame(central);
-    m_indexPanel->setFixedHeight(44);
-    m_indexPanel->setStyleSheet(
-        "QFrame{background:#14" + COLOR_CARD.name().mid(1) + ";border:1px solid #22334d;border-radius:8px;}");
-    auto *idxLayout = new QHBoxLayout(m_indexPanel);
-    idxLayout->setContentsMargins(14, 4, 14, 4);
+    auto *title = new QLabel(QStringLiteral("冰川 · A股行情监控"), central);
+    title->setStyleSheet("font-size:17px;font-weight:bold;color:#4da3ff;");
 
-    auto makeIdxLabel = [&](const QString &title) -> QLabel* {
-        auto *lbl = new QLabel(title + QStringLiteral("  --"), m_indexPanel);
-        lbl->setStyleSheet("color:#8fa3c0;font-size:13px;border:none;background:transparent;");
+    auto makeIdxLabel = [&](const QString &prefix) -> QLabel * {
+        auto *lbl = new QLabel(prefix + QStringLiteral("  --"), central);
+        lbl->setStyleSheet("color:#8fa3c0;font-size:12px;");
         lbl->setTextFormat(Qt::RichText);
         return lbl;
     };
-
     m_idxSh = makeIdxLabel(QStringLiteral("上证"));
     m_idxSz = makeIdxLabel(QStringLiteral("深证"));
     m_idxCy = makeIdxLabel(QStringLiteral("创业板"));
-    idxLayout->addWidget(m_idxSh);
-    idxLayout->addWidget(m_idxSz);
-    idxLayout->addWidget(m_idxCy);
-    idxLayout->addStretch();
-    root->addWidget(m_indexPanel);
 
-    // 输入与操作行
-    auto *row = new QHBoxLayout;
+    m_mktLabel = new QLabel(QStringLiteral("--"), central);
+    m_mktLabel->setStyleSheet("color:#8fa3c0;font-size:12px;");
+
+    topBar->addWidget(title);
+    topBar->addSpacing(8);
+    topBar->addWidget(m_idxSh);
+    topBar->addWidget(m_idxSz);
+    topBar->addWidget(m_idxCy);
+    topBar->addStretch();
+    topBar->addWidget(m_mktLabel);
+
+    auto *topWidget = new QWidget(central);
+    topWidget->setLayout(topBar);
+    topWidget->setFixedHeight(40);
+    root->addWidget(topWidget);
+
+    // ===== ② 操作工具栏 =====
+    auto *toolRow = new QHBoxLayout;
+    toolRow->setSpacing(8);
+
     m_codeEdit = new QLineEdit(central);
     m_codeEdit->setPlaceholderText(QStringLiteral("输入6位代码，如 002555"));
     m_codeEdit->setFixedWidth(180);
@@ -139,38 +184,52 @@ void MainWindow::buildUi()
     connect(m_codeEdit, &QLineEdit::returnPressed, this, &MainWindow::addStock);
 
     auto *addBtn = new QPushButton(QStringLiteral("添加"), central);
-    auto *refreshBtn = new QPushButton(QStringLiteral("🔄 刷新"), central);
     addBtn->setStyleSheet("QPushButton{background:#3d7bff;color:white;border:none;"
-                          "border-radius:6px;padding:8px 18px;}"
+                          "border-radius:6px;padding:8px 18px;font-size:13px;}"
                           "QPushButton:hover{background:#2a5fd6;}");
-    refreshBtn->setStyleSheet("QPushButton{background:#131f33;color:white;border:1px solid #22334d;"
-                              "border-radius:6px;padding:8px 18px;}"
-                              "QPushButton:hover{background:#182742;}");
     connect(addBtn, &QPushButton::clicked, this, &MainWindow::addStock);
+
+    auto *refreshBtn = new QPushButton(QStringLiteral("刷新"), central);
+    refreshBtn->setStyleSheet("QPushButton{background:#131f33;color:white;border:1px solid #22334d;"
+                              "border-radius:6px;padding:8px 18px;font-size:13px;}"
+                              "QPushButton:hover{background:#182742;border-color:#3d7bff;}");
     connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::refresh);
 
     auto *intervalLabel = new QLabel(QStringLiteral("刷新间隔:"), central);
-    intervalLabel->setStyleSheet("color:#8fa3c0;");
+    intervalLabel->setStyleSheet("color:#8fa3c0;font-size:13px;");
     m_intervalCombo = new QComboBox(central);
-    m_intervalCombo->addItems({QStringLiteral("5秒"), QStringLiteral("10秒"), QStringLiteral("30秒"),
-                               QStringLiteral("60秒"), QStringLiteral("120秒")});
+    m_intervalCombo->addItems({QStringLiteral("5秒"), QStringLiteral("10秒"),
+                               QStringLiteral("30秒"), QStringLiteral("60秒"),
+                               QStringLiteral("120秒")});
     m_intervalCombo->setCurrentIndex(1);
     m_intervalCombo->setStyleSheet(
         "QComboBox{background:#131f33;border:1px solid #22334d;border-radius:6px;"
-        "padding:6px 10px;color:white;}");
+        "padding:6px 10px;color:white;font-size:13px;}"
+        "QComboBox:hover{border-color:#3d7bff;}"
+        "QComboBox QAbstractItemView{background:#131f33;color:white;selection-background-color:#2a5fd6;}");
     connect(m_intervalCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onIntervalChanged);
 
-    row->addWidget(m_codeEdit);
-    row->addWidget(addBtn);
-    row->addWidget(refreshBtn);
-    row->addSpacing(8);
-    row->addWidget(intervalLabel);
-    row->addWidget(m_intervalCombo);
-    row->addStretch();
-    root->addLayout(row);
+    m_countdownLabel = new QLabel(
+        QStringLiteral("下次刷新: %1秒").arg(m_countdownValue, 2, 10, QChar('0')), central);
+    m_countdownLabel->setStyleSheet("color:#8fa3c0;font-size:12px;");
+    m_countdownLabel->setMinimumWidth(140);
 
-    // 行情表格
+    toolRow->addWidget(m_codeEdit);
+    toolRow->addWidget(addBtn);
+    toolRow->addWidget(refreshBtn);
+    toolRow->addSpacing(12);
+    toolRow->addWidget(intervalLabel);
+    toolRow->addWidget(m_intervalCombo);
+    toolRow->addWidget(m_countdownLabel);
+    toolRow->addStretch();
+
+    auto *toolWidget = new QWidget(central);
+    toolWidget->setLayout(toolRow);
+    toolWidget->setFixedHeight(44);
+    root->addWidget(toolWidget);
+
+    // ===== ③ 表格区域 =====
     m_table = new QTableWidget(0, 10, central);
     m_table->setHorizontalHeaderLabels({QStringLiteral("代码"), QStringLiteral("名称"),
         QStringLiteral("最新价"), QStringLiteral("涨跌幅"), QStringLiteral("涨跌额"),
@@ -180,18 +239,20 @@ void MainWindow::buildUi()
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(32);
     m_table->setShowGrid(false);
+    m_table->setMouseTracking(true);
+    m_table->viewport()->installEventFilter(this);
     m_table->setStyleSheet(
-        "QTableWidget{background:#131f33;border:1px solid #22334d;border-radius:8px;"
+        "QTableWidget{background:#131f33;border:1px solid #22334d;border-radius:6px;"
         "color:#e8eefc;font-size:13px;gridline-color:transparent;}"
         "QTableWidget::item{padding:4px 6px;border-bottom:1px solid #1a2740;}"
-        "QHeaderView::section{background:#d5dae0;color:#151a2a;border:none;"
-        "padding:8px 4px;font-weight:bold;font-size:12px;}"
-        "QTableWidget::item:selected{background:#2a5fd6;color:white;}");
-    // 表头文字强制设为深色（样式表可能不生效，用代码兜底）
+        "QHeaderView::section{background:#1a2740;color:#c8d6e5;border:none;"
+        "padding:8px 4px;font-size:12px;font-weight:bold;}"
+        "QTableWidget::item:selected{background:#3a5a8c;color:white;}");
     for (int c = 0; c < 10; ++c) {
         auto *hi = m_table->horizontalHeaderItem(c);
-        if (hi) hi->setForeground(QColor(0x15, 0x1a, 0x2a));
+        if (hi) hi->setForeground(QColor(0xc8, 0xd6, 0xe5));
     }
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -200,16 +261,10 @@ void MainWindow::buildUi()
         m_table->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     root->addWidget(m_table, 1);
 
-    // 双击表格行打开K线图
     connect(m_table, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::onTableDoubleClicked);
 
-    // 状态栏
-    m_statusLabel = new QLabel(QStringLiteral("就绪"), central);
-    m_statusLabel->setStyleSheet("color:#8fa3c0;font-size:12px;padding:2px 2px;");
-    root->addWidget(m_statusLabel);
-
-    // 右键菜单 — 挂在表格上，坐标才正确
+    // 右键菜单
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QModelIndex idx = m_table->indexAt(pos);
@@ -217,12 +272,20 @@ void MainWindow::buildUi()
         m_table->selectRow(idx.row());
         QMenu menu(this);
         menu.addAction(QStringLiteral("🔔 设置价格预警"), this, &MainWindow::setAlert);
+        menu.addAction(QStringLiteral("📊 生成今日报告"), this, &MainWindow::generateReports);
         menu.addAction(QStringLiteral("🗑 删除该股票"), this, &MainWindow::removeStock);
         menu.exec(m_table->viewport()->mapToGlobal(pos));
     });
+
+    // ===== ④ 底部状态栏 =====
+    m_statusLabel = new QLabel(QStringLiteral("就绪"), central);
+    m_statusLabel->setStyleSheet("color:#8fa3c0;font-size:11px;padding:2px 4px;");
+    m_statusLabel->setFixedHeight(24);
+    root->addWidget(m_statusLabel);
 }
 
-// ---------- 数据获取 ----------
+// ==================== 数据获取 ====================
+
 QString MainWindow::secId(const QString &code) const
 {
     return code.startsWith('6') ? "1." + code : "0." + code;
@@ -231,6 +294,7 @@ QString MainWindow::secId(const QString &code) const
 void MainWindow::refresh()
 {
     if (m_stocks.isEmpty()) return;
+    m_countdownValue = m_currentIntervalSecs;
     fetchQuotes();
 }
 
@@ -239,7 +303,6 @@ void MainWindow::fetchQuotes()
     QStringList secids;
     for (const QString &c : m_stocks)
         secids << secId(c);
-    // 三大指数
     secids << "1.000001" << "0.399001" << "0.399006";
 
     QUrl url(API_HOST);
@@ -285,7 +348,7 @@ void MainWindow::onReplyFinished(QNetworkReply *reply)
         m_quotes[code] = m;
     }
 
-    // 更新大盘指数面板
+    // 更新大盘指数
     auto fmtIdx = [&](const QString &code, QLabel *lbl, const QString &title) {
         if (m_quotes.contains(code)) {
             const auto &q = m_quotes[code];
@@ -303,14 +366,13 @@ void MainWindow::onReplyFinished(QNetworkReply *reply)
     fmtIdx("399006", m_idxCy, QStringLiteral("创业板"));
 
     renderTable();
+    updateStatusBar();
     checkAlerts();
     updateMarketStatus();
-    QString timeStr = QTime::currentTime().toString("HH:mm:ss");
-    m_refreshTimeLabel->setText(QStringLiteral("上次刷新: %1").arg(timeStr));
-    m_statusLabel->setText(QStringLiteral("数据源: 东方财富 · 右键股票可设置预警/删除"));
 }
 
-// ---------- 表格渲染 ----------
+// ==================== 表格渲染 ====================
+
 void MainWindow::renderTable()
 {
     m_rowOfCode.clear();
@@ -328,28 +390,32 @@ void MainWindow::renderTable()
             auto *it = new QTableWidgetItem(text);
             it->setTextAlignment(Qt::AlignCenter);
             if (colored) it->setForeground(color);
+            if (col >= 2 && col <= 8 && colored)
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             m_table->setItem(row, col, it);
         };
 
         setItem(0, code);
         setItem(1, q["name"]);
         setItem(2, q["price"], true);
-        setItem(3, QString("%1%").arg(q["chgPct"]), true);
-        setItem(4, q["chg"], true);
+        setItem(3, (pct > 0 ? "+" : "") + q["chgPct"] + "%", true);
+        setItem(4, (q["chg"].toDouble() > 0 ? "+" : "") + q["chg"], true);
         setItem(5, q["open"]);
         setItem(6, q["high"]);
         setItem(7, q["low"]);
         setItem(8, q["prevClose"]);
 
-        // 预警列 — 显示已设的上/下破价
+        // 预警列 — ↑上破价 ↓下破价
         QString alertText;
         if (m_alerts.contains(code)) {
             auto a = m_alerts[code];
-            if (a.contains("up"))   alertText += QStringLiteral("上") + QString::number(a["up"], 'f', 2);
-            if (a.contains("down")) alertText += (alertText.isEmpty() ? "" : " ")
-                                         + QStringLiteral("下") + QString::number(a["down"], 'f', 2);
+            if (a.contains("up"))
+                alertText += QStringLiteral("↑") + QString::number(a["up"], 'f', 2);
+            if (a.contains("down"))
+                alertText += (alertText.isEmpty() ? QString() : QStringLiteral(" "))
+                           + QStringLiteral("↓") + QString::number(a["down"], 'f', 2);
         }
-        auto *alertItem = new QTableWidgetItem(alertText.isEmpty() ? QStringLiteral("-") : alertText);
+        auto *alertItem = new QTableWidgetItem(alertText.isEmpty() ? QStringLiteral("—") : alertText);
         alertItem->setTextAlignment(Qt::AlignCenter);
         alertItem->setForeground(COLOR_FLAT);
         m_table->setItem(row, 9, alertItem);
@@ -361,7 +427,27 @@ void MainWindow::renderTable()
         m_table->removeRow(m_table->rowCount() - 1);
 }
 
-// ---------- 预警 ----------
+// ==================== 状态栏汇总 ====================
+
+void MainWindow::updateStatusBar()
+{
+    QString timeStr = QTime::currentTime().toString("HH:mm:ss");
+    int total = m_stocks.size();
+    int upCount = 0, downCount = 0;
+    for (const QString &code : m_stocks) {
+        if (m_quotes.contains(code)) {
+            double pct = m_quotes[code]["chgPct"].toDouble();
+            if (pct > 0) upCount++;
+            else if (pct < 0) downCount++;
+        }
+    }
+    m_statusLabel->setText(
+        QStringLiteral("%1只自选 | 上涨%2只 | 下跌%3只 | 更新于 %4 | 双击股票查看K线，右键设置预警或删除")
+            .arg(total).arg(upCount).arg(downCount).arg(timeStr));
+}
+
+// ==================== 预警 ====================
+
 void MainWindow::checkAlerts()
 {
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -374,7 +460,7 @@ void MainWindow::checkAlerts()
         const QString &name = m_quotes[code]["name"];
 
         auto fire = [&](const QString &key, double target, const QString &dir) {
-            if (now - m_triggered.value(key, 0) > 5 * 60 * 1000) { // 5分钟防重复
+            if (now - m_triggered.value(key, 0) > 5 * 60 * 1000) {
                 m_triggered[key] = now;
                 QApplication::beep();
                 QMessageBox::warning(this, QStringLiteral("📢 股票预警"),
@@ -434,7 +520,8 @@ void MainWindow::removeStock()
     renderTable();
 }
 
-// ---------- 添加与定时 ----------
+// ==================== 添加与定时 ====================
+
 void MainWindow::addStock()
 {
     QString code = m_codeEdit->text().trimmed();
@@ -458,32 +545,51 @@ void MainWindow::addStock()
 void MainWindow::onIntervalChanged(int index)
 {
     int secs[] = {5, 10, 30, 60, 120};
-    m_timer->setInterval(secs[qBound(0, index, 4)] * 1000);
+    m_currentIntervalSecs = secs[qBound(0, index, 4)];
+    m_timer->setInterval(m_currentIntervalSecs * 1000);
+    m_countdownValue = m_currentIntervalSecs;
 }
 
 void MainWindow::updateMarketStatus()
 {
     QDateTime now = QDateTime::currentDateTime();
-    int wd = now.date().dayOfWeek();          // 1=周一 ... 7=周日
+    int wd = now.date().dayOfWeek();
     int hm = now.time().hour() * 60 + now.time().minute();
     QString txt;
+
     if (wd >= 6) {
-        txt = QStringLiteral("休市 (周末)");
-    } else if (hm >= 9 * 60 + 15 && hm <= 15 * 60) {
-        if ((hm >= 9 * 60 + 30 && hm <= 11 * 60 + 30) ||
-            (hm >= 13 * 60 && hm <= 15 * 60))
-            txt = QStringLiteral("🟢 交易中");
-        else if (hm < 9 * 60 + 30)
-            txt = QStringLiteral("⏳ 集合竞价");
+        int days = 8 - wd;
+        txt = QStringLiteral("休市(周末) · %1天后周一 9:30 开盘").arg(days);
+    } else if (hm < 9 * 60 + 15) {
+        if (hm < 9 * 60 + 30)
+            txt = QStringLiteral("未开盘 · 今日 9:30 开盘");
         else
-            txt = QStringLiteral("☕ 午间休市");
+            txt = QStringLiteral("集合竞价 · 9:30 开盘");
+    } else if (hm <= 15 * 60) {
+        if ((hm >= 9 * 60 + 30 && hm <= 11 * 60 + 30) ||
+            (hm >= 13 * 60 && hm <= 15 * 60)) {
+            int remain = 15 * 60 - hm;
+            int h = remain / 60, m = remain % 60;
+            txt = QStringLiteral("🟢 交易中 · %1:%2后收盘")
+                .arg(h).arg(m, 2, 10, QChar('0'));
+        } else if (hm < 9 * 60 + 30) {
+            txt = QStringLiteral("集合竞价 · 9:30 开盘");
+        } else {
+            int remain = 13 * 60 - hm;
+            int h = remain / 60, m = remain % 60;
+            txt = QStringLiteral("☕ 午间休市 · %1:%2后开盘")
+                .arg(h).arg(m, 2, 10, QChar('0'));
+        }
     } else {
-        txt = QStringLiteral("🔴 已收盘");
+        int daysToNext = 1;
+        if (wd == 5) daysToNext = 3;
+        txt = QStringLiteral("🔴 已收盘 · %1天后 9:30 开盘").arg(daysToNext);
     }
     m_mktLabel->setText(txt);
 }
 
-// ---------- 配置持久化 ----------
+// ==================== 配置持久化 ====================
+
 void MainWindow::saveConfig()
 {
     QSettings s(QStringLiteral("config.ini"), QSettings::IniFormat);
@@ -538,8 +644,19 @@ void MainWindow::onTableDoubleClicked(int row, int /*column*/)
     if (row < 0 || row >= m_stocks.size()) return;
     QString code = m_stocks.at(row);
     QString name = m_quotes.value(code).value("name", code);
-    auto *dlg = new KLineDialog(code, name, this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
+    auto *window = new StockChartWindow(code, name, m_net, this);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
 }
 
+// ==================== 报告生成 ====================
+
+void MainWindow::generateReports()
+{
+    QMap<QString, QString> names;
+    for (const QString &code : m_stocks)
+        names[code] = m_quotes.value(code).value("name", code);
+
+    m_statusLabel->setText(QStringLiteral("正在生成今日报告..."));
+    m_reporter->generateAll(m_stocks, names);
+}

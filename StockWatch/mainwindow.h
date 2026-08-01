@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QMap>
 #include <QTimer>
+#include <QDate>
 
 class QTableWidget;
 class QNetworkAccessManager;
@@ -11,7 +12,7 @@ class QNetworkReply;
 class QLabel;
 class QLineEdit;
 class QComboBox;
-class QFrame;
+class ReportGenerator;
 
 class MainWindow : public QMainWindow
 {
@@ -19,6 +20,9 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override;
 
 private slots:
     void addStock();
@@ -28,11 +32,13 @@ private slots:
     void removeStock();
     void onIntervalChanged(int index);
     void onTableDoubleClicked(int row, int column);
+    void generateReports();
 
 private:
     void buildUi();
     void fetchQuotes();
     void renderTable();
+    void updateStatusBar();
     void checkAlerts();
     void saveConfig();
     void loadConfig();
@@ -44,11 +50,16 @@ private:
     QComboBox           *m_intervalCombo;
     QLabel              *m_statusLabel;
     QLabel              *m_mktLabel;
-    QLabel              *m_refreshTimeLabel;
-    QFrame              *m_indexPanel;
+    QLabel              *m_countdownLabel;
     QLabel              *m_idxSh, *m_idxSz, *m_idxCy;  // 上证/深证/创业板
     QNetworkAccessManager *m_net;
     QTimer              *m_timer;
+    QTimer              *m_countdownTimer;
+    int                  m_countdownValue = 10;
+    int                  m_currentIntervalSecs = 10;
+    QTimer              *m_reportTimer;
+    QDate                m_lastReportDate;
+    ReportGenerator     *m_reporter;
 
     QStringList m_stocks;                          // 自选股代码列表
     QMap<QString, QMap<QString, QString>> m_quotes; // code -> {name,price,chgPct,...}
@@ -58,4 +69,3 @@ private:
 };
 
 #endif // MAINWINDOW_H
-

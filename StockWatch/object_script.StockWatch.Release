@@ -1,0 +1,12 @@
+INPUT(
+./release/main.o
+./release/mainwindow.o
+./release/klinechart.o
+./release/stockchartwindow.o
+./release/indicator.o
+./release/reportgenerator.o
+./release/moc_mainwindow.o
+./release/moc_klinechart.o
+./release/moc_stockchartwindow.o
+./release/moc_reportgenerator.o
+);

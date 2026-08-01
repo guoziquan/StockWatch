@@ -237,6 +237,7 @@ Makefile: StockWatch.pro ../Qt/Qt5.9.7/5.9.7/mingw53_32/mkspecs/win32-g++/qmake.
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Widgets.prl \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Gui.prl \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Network.prl \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Concurrent.prl \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Core.prl
 	$(QMAKE) -o Makefile StockWatch.pro
 ../Qt/Qt5.9.7/5.9.7/mingw53_32/mkspecs/features/spec_pre.prf:
@@ -415,6 +416,7 @@ StockWatch.pro:
 ../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Widgets.prl:
 ../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Gui.prl:
 ../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Network.prl:
+../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Concurrent.prl:
 ../Qt/Qt5.9.7/5.9.7/mingw53_32/lib/Qt5Core.prl:
 qmake: FORCE
 	@$(QMAKE) -o Makefile StockWatch.pro
