@@ -29,15 +29,31 @@
 #include <QFile>
 #include <QMouseEvent>
 #include <QEvent>
+#include <QCloseEvent>
 #include <QDialog>
 #include <QPointer>
+#include <QStyle>
+#include <QSslConfiguration>
+#include <QSslSocket>
+
+static QString loadReportDir()
+{
+    QString jsonFile = QCoreApplication::applicationDirPath() + "/stocks.json";
+    QFile f(jsonFile);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    QString dir = doc.object().value("reportDir").toString().trimmed();
+    return dir.isEmpty() ? QString() : dir;
+}
 
 // ---------- 常量 ----------
 static const QString API_HOST = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 
 static QStringList loadDefaultStocks()
 {
-    QFile f(QStringLiteral("stocks.json"));
+    QString jsonFile = QCoreApplication::applicationDirPath() + "/stocks.json";
+    QFile f(jsonFile);
     if (!f.open(QIODevice::ReadOnly))
         return {"002555", "002558", "002602", "002517", "603444", "300533"};
 
@@ -134,7 +150,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_countdownTimer->start();
 
     // 报告生成器 + 午夜调度
+    QString rd = loadReportDir();
+    if (rd.isEmpty())
+        rd = QCoreApplication::applicationDirPath() + "/reports";
     m_reporter = new ReportGenerator(m_net, this);
+    m_reporter->setReportDir(rd);
     connect(m_reporter, &ReportGenerator::reportReady, this, [this](const QString &path) {
         m_statusLabel->setText(QStringLiteral("报告已生成: %1").arg(path));
     });
@@ -154,6 +174,37 @@ MainWindow::MainWindow(QWidget *parent)
     });
     m_reportTimer->start();
 
+    // ---- 系统托盘 ----
+    m_trayIcon = new QSystemTrayIcon(this);
+    QIcon icon(QCoreApplication::applicationDirPath() + "/enter_icon.ico");
+    if (icon.isNull())
+        icon = qApp->style()->standardIcon(QStyle::SP_ComputerIcon);
+    m_trayIcon->setIcon(icon);
+    m_trayIcon->setToolTip(QStringLiteral("冰川 · A股行情监控"));
+
+    m_trayMenu = new QMenu(this);
+    m_trayMenu->setStyleSheet(
+        "QMenu{background:#131f33;color:#e8eefc;border:1px solid #22334d;padding:4px;}"
+        "QMenu::item{padding:6px 24px;}"
+        "QMenu::item:selected{background:#2a5fd6;}"
+        "QMenu::separator{background:#22334d;height:1px;margin:4px 8px;}");
+    m_trayMenu->addAction(QStringLiteral("显示主窗口"), this, [this]{
+        show();
+        raise();
+        activateWindow();
+    });
+    m_trayMenu->addSeparator();
+    m_trayMenu->addAction(QStringLiteral("退出"), qApp, &QApplication::quit);
+    m_trayIcon->setContextMenu(m_trayMenu);
+
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick) {
+            if (isVisible()) hide(); else { show(); raise(); activateWindow(); }
+        }
+    });
+    m_trayIcon->show();
+
     refresh();
 }
 
@@ -169,6 +220,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *ev)
             m_table->viewport()->setCursor(Qt::ArrowCursor);
     }
     return QMainWindow::eventFilter(obj, ev);
+}
+
+// ---------- 关闭窗口 → 最小化到托盘 ----------
+void MainWindow::closeEvent(QCloseEvent *ev)
+{
+    hide();
+    ev->ignore();
 }
 
 // ==================== UI 构建 ====================
@@ -373,18 +431,84 @@ void MainWindow::fetchQuotes()
     url.setQuery(q);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0");
+    req.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+    req.setRawHeader("Accept", "application/json, text/plain, */*");
+    req.setSslConfiguration(QSslConfiguration::defaultConfiguration());
 
     QNetworkReply *reply = m_net->get(req);
     connect(reply, &QNetworkReply::finished, this,
             [this, reply]() { onReplyFinished(reply); });
+
+    // 超时保护：15 秒无响应则放弃
+    QTimer::singleShot(15000, reply, [reply]() {
+        if (reply->isRunning()) {
+            reply->abort();
+        }
+    });
 }
 
 void MainWindow::onReplyFinished(QNetworkReply *reply)
 {
     reply->deleteLater();
+
+    if (!QSslSocket::supportsSsl()) {
+        m_statusLabel->setText(QStringLiteral("获取失败: 缺少OpenSSL库 (libeay32.dll / ssleay32.dll)"));
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError) {
-        m_statusLabel->setText(QStringLiteral("获取失败: %1").arg(reply->errorString()));
+        QString errMsg = reply->errorString();
+        int errCode = reply->error();
+
+        // 给出明确的错误提示 — 直接弹窗，状态栏只写简短摘要
+        if (errMsg.contains("SSL", Qt::CaseInsensitive)
+            || errMsg.contains("TLS", Qt::CaseInsensitive)
+            || errMsg.contains("handshake", Qt::CaseInsensitive)) {
+            m_statusLabel->setText(QStringLiteral("获取失败: SSL握手失败"));
+            QMessageBox::warning(this, QStringLiteral("行情获取失败 — SSL错误"),
+                QStringLiteral("SSL握手失败，可能原因:\n\n"
+                               "1. 缺少 OpenSSL 库\n"
+                               "   请确保 libeay32.dll / ssleay32.dll 与 StockWatch.exe 在同一目录\n\n"
+                               "2. 系统时间不正确\n"
+                               "   请检查电脑日期和时间\n\n"
+                               "3. 网络屏蔽了 HTTPS 连接\n"
+                               "   请检查防火墙或代理设置"));
+        } else if (errMsg.contains("Connection closed", Qt::CaseInsensitive)
+                   || errMsg.contains("Connection refused", Qt::CaseInsensitive)
+                   || errMsg.contains("Host", Qt::CaseInsensitive)
+                   || errMsg.contains("timed out", Qt::CaseInsensitive)
+                   || errMsg.contains("Timeout", Qt::CaseInsensitive)) {
+            m_statusLabel->setText(QStringLiteral("获取失败: 无法连接行情服务器"));
+            QMessageBox::warning(this, QStringLiteral("行情获取失败 — 网络错误"),
+                QStringLiteral("无法连接东方财富行情服务器，可能原因:\n\n"
+                               "1. 网络连接异常\n"
+                               "   请检查网络是否正常\n\n"
+                               "2. 防火墙/安全软件拦截\n"
+                               "   请允许 StockWatch.exe 访问网络\n\n"
+                               "3. 需要配置代理\n"
+                               "   如果公司网络需要代理，请设置系统代理\n\n"
+                               "4. DNS 解析失败\n"
+                               "   尝试浏览器访问: https://quote.eastmoney.com"));
+        } else if (errCode == QNetworkReply::OperationCanceledError) {
+            m_statusLabel->setText(QStringLiteral("获取失败: 请求超时"));
+            QMessageBox::warning(this, QStringLiteral("行情获取失败 — 超时"),
+                QStringLiteral("请求超时(>15秒)，可能原因:\n\n"
+                               "1. 网络速度较慢\n"
+                               "2. 东方财富服务器繁忙\n\n"
+                               "软件将在 10 秒后自动重试"));
+        } else {
+            m_statusLabel->setText(QStringLiteral("获取失败: %1 (错误码:%2)")
+                                   .arg(errMsg).arg(errCode));
+        }
+
+        // 失败后 10 秒自动重试一次
+        QTimer::singleShot(10000, this, [this]() {
+            if (!m_stocks.isEmpty()) {
+                m_statusLabel->setText(QStringLiteral("正在重试获取行情…"));
+                fetchQuotes();
+            }
+        });
         return;
     }
 
@@ -674,7 +798,7 @@ void MainWindow::updateMarketStatus()
 
 void MainWindow::saveConfig()
 {
-    QSettings s(QStringLiteral("config.ini"), QSettings::IniFormat);
+    QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
     s.beginWriteArray(QStringLiteral("stocks"));
     for (int i = 0; i < m_stocks.size(); ++i) {
         s.setArrayIndex(i);

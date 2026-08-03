@@ -103,7 +103,7 @@ void ReportGenerator::generateAll(const QStringList &codes,
     m_totalCount = 0;
     m_doneCount = 0;
 
-    QDir("reports").mkpath(".");  // 确保根目录存在
+    QDir(m_reportDir).mkpath(".");
     for (const QString &code : codes) {
         QString name = names.value(code, code);
         generate(code, name);
@@ -213,10 +213,11 @@ void ReportGenerator::checkAndBuild()
         // Qt 5.9 C++11: 不能 lambda capture initializer, 不能 invokeMethod(lambda)
         // 用 QSharedPointer 把数据传进去, 用 QMetaObject::invokeMethod 回调普通槽
         auto data = QSharedPointer<BuildData>::create();
-        data->code   = code;
-        data->name   = item.name;
-        data->klines = item.klines;
-        data->flows  = item.flows;
+        data->code    = code;
+        data->name    = item.name;
+        data->baseDir = m_reportDir;
+        data->klines  = item.klines;
+        data->flows   = item.flows;
 
         QPointer<ReportGenerator> self(this);
         m_outstandingJobs++;
@@ -227,8 +228,9 @@ void ReportGenerator::checkAndBuild()
                                            data->klines, data->flows, r);
 
             // 写文件
-            QString path = QStringLiteral("reports/%1/%2.txt")
-                .arg(data->code, QDate::currentDate().toString("yyyy-MM-dd"));
+            QString path = QStringLiteral("%1/reports/%2/%3.txt")
+                .arg(data->baseDir, data->code,
+                     QDate::currentDate().toString("yyyy-MM-dd"));
             QDir().mkpath(QFileInfo(path).absolutePath());
             QFile f(path);
             bool ok = f.open(QIODevice::WriteOnly | QIODevice::Text);
@@ -272,7 +274,7 @@ QString ReportGenerator::secId(const QString &code) const
 
 QString ReportGenerator::reportPath(const QString &code) const
 {
-    return QStringLiteral("reports/%1/%2.txt").arg(code, todayStr());
+    return QStringLiteral("%1/%2/%3.txt").arg(m_reportDir, code, todayStr());
 }
 
 QString ReportGenerator::todayStr() const

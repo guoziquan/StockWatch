@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QDate>
 #include <QPointer>
+#include <QSystemTrayIcon>
 
 class QTableWidget;
 class QNetworkAccessManager;
@@ -14,6 +15,7 @@ class QLabel;
 class QLineEdit;
 class QComboBox;
 class QDialog;
+class QMenu;
 class ReportGenerator;
 
 // ---------- 持仓记录 ----------
@@ -34,6 +36,7 @@ public:
 
 protected:
     bool eventFilter(QObject *obj, QEvent *ev) override;
+    void closeEvent(QCloseEvent *ev) override;
 
 private slots:
     void addStock();
@@ -103,6 +106,10 @@ private:
     // 持仓
     QMap<QString, QVector<HoldingRecord>> m_holdings;
     QMap<QString, HoldingWidgets> m_holdingWidgets;
+
+    // 系统托盘
+    QSystemTrayIcon *m_trayIcon = nullptr;
+    QMenu           *m_trayMenu  = nullptr;
 };
 
 #endif // MAINWINDOW_H

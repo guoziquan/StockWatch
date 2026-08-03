@@ -25,6 +25,9 @@ public:
     void generateAll(const QStringList &codes,
                      const QMap<QString, QString> &names);
 
+    /// 设置报告输出根目录
+    void setReportDir(const QString &dir) { m_reportDir = dir; }
+
 signals:
     void reportReady(const QString &filePath);
     void allDone(int count);
@@ -57,6 +60,7 @@ private:
 
     // ---- 成员 ----
     QNetworkAccessManager *m_net;
+    QString m_reportDir;
 
     // 待处理队列: code -> {name, klineDone, flowDone}
     struct PendingItem {
@@ -76,6 +80,7 @@ private:
     struct BuildData {
         QString code;
         QString name;
+        QString baseDir;  // 报告根目录（exe 所在目录）
         QVector<KLineData> klines;
         QVector<MoneyFlowItem> flows;
     };
