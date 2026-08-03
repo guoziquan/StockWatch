@@ -29,6 +29,8 @@
 #include <QFile>
 #include <QMouseEvent>
 #include <QEvent>
+#include <QDialog>
+#include <QPointer>
 
 // ---------- 常量 ----------
 static const QString API_HOST = "https://push2.eastmoney.com/api/qt/ulist.np/get";
@@ -56,6 +58,54 @@ static const QColor COLOR_UP(0xff, 0x4d, 0x5e);
 static const QColor COLOR_DOWN(0x2e, 0xe6, 0xa8);
 static const QColor COLOR_FLAT(0x8f, 0xa3, 0xc0);
 static const QColor COLOR_BG(0x0b, 0x12, 0x20);
+
+// ==================== 持仓计算辅助 ====================
+
+int MainWindow::netShares(const QString &code) const
+{
+    const auto &recs = m_holdings.value(code);
+    int net = 0;
+    for (const auto &r : recs)
+        net += r.isBuy ? r.shares : -r.shares;
+    return net;
+}
+
+double MainWindow::totalBuyCost(const QString &code) const
+{
+    double cost = 0;
+    for (const auto &r : m_holdings.value(code))
+        if (r.isBuy) cost += r.shares * r.price;
+    return cost;
+}
+
+double MainWindow::totalSellIncome(const QString &code) const
+{
+    double income = 0;
+    for (const auto &r : m_holdings.value(code))
+        if (!r.isBuy) income += r.shares * r.price;
+    return income;
+}
+
+double MainWindow::avgCost(const QString &code) const
+{
+    int totalBuyShares = 0;
+    double cost = 0;
+    for (const auto &r : m_holdings.value(code)) {
+        if (r.isBuy) {
+            totalBuyShares += r.shares;
+            cost += r.shares * r.price;
+        }
+    }
+    if (totalBuyShares <= 0) return 0;
+    return cost / totalBuyShares;
+}
+
+double MainWindow::holdingPnl(const QString &code, double currentPrice) const
+{
+    int net = netShares(code);
+    if (net <= 0) return 0;
+    return currentPrice * net - totalBuyCost(code) + totalSellIncome(code);
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -185,13 +235,13 @@ void MainWindow::buildUi()
 
     auto *addBtn = new QPushButton(QStringLiteral("添加"), central);
     addBtn->setStyleSheet("QPushButton{background:#3d7bff;color:white;border:none;"
-                          "border-radius:6px;padding:8px 18px;font-size:13px;}"
+                          "border-radius:6px;padding:6px 18px;font-size:13px;min-height:28px;}"
                           "QPushButton:hover{background:#2a5fd6;}");
     connect(addBtn, &QPushButton::clicked, this, &MainWindow::addStock);
 
     auto *refreshBtn = new QPushButton(QStringLiteral("刷新"), central);
     refreshBtn->setStyleSheet("QPushButton{background:#131f33;color:white;border:1px solid #22334d;"
-                              "border-radius:6px;padding:8px 18px;font-size:13px;}"
+                              "border-radius:6px;padding:6px 18px;font-size:13px;min-height:28px;}"
                               "QPushButton:hover{background:#182742;border-color:#3d7bff;}");
     connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::refresh);
 
@@ -230,11 +280,11 @@ void MainWindow::buildUi()
     root->addWidget(toolWidget);
 
     // ===== ③ 表格区域 =====
-    m_table = new QTableWidget(0, 10, central);
+    m_table = new QTableWidget(0, 11, central);
     m_table->setHorizontalHeaderLabels({QStringLiteral("代码"), QStringLiteral("名称"),
         QStringLiteral("最新价"), QStringLiteral("涨跌幅"), QStringLiteral("涨跌额"),
         QStringLiteral("今开"), QStringLiteral("最高"), QStringLiteral("最低"),
-        QStringLiteral("昨收"), QStringLiteral("预警")});
+        QStringLiteral("昨收"), QStringLiteral("预警"), QStringLiteral("持仓")});
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -247,17 +297,19 @@ void MainWindow::buildUi()
         "QTableWidget{background:#131f33;border:1px solid #22334d;border-radius:6px;"
         "color:#e8eefc;font-size:13px;gridline-color:transparent;}"
         "QTableWidget::item{padding:4px 6px;border-bottom:1px solid #1a2740;}"
-        "QHeaderView::section{background:#1a2740;color:#c8d6e5;border:none;"
+        "QHeaderView::section{background:#1a2740;color:#151a2a;border:none;"
         "padding:8px 4px;font-size:12px;font-weight:bold;}"
+        "QHeaderView::section:hover,QHeaderView::section:pressed{background:#1a2740;color:#151a2a;"
+        "border:none;padding:8px 4px;font-size:12px;font-weight:bold;}"
         "QTableWidget::item:selected{background:#3a5a8c;color:white;}");
-    for (int c = 0; c < 10; ++c) {
+    for (int c = 0; c < 11; ++c) {
         auto *hi = m_table->horizontalHeaderItem(c);
-        if (hi) hi->setForeground(QColor(0xc8, 0xd6, 0xe5));
+        if (hi) hi->setForeground(QColor(0x15, 0x1a, 0x2a));
     }
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 10; ++c)
+    for (int c = 2; c < 11; ++c)
         m_table->horizontalHeader()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     root->addWidget(m_table, 1);
 
@@ -273,6 +325,14 @@ void MainWindow::buildUi()
         QMenu menu(this);
         menu.addAction(QStringLiteral("🔔 设置价格预警"), this, &MainWindow::setAlert);
         menu.addAction(QStringLiteral("📊 生成今日报告"), this, &MainWindow::generateReports);
+        menu.addSeparator();
+        auto *codeItem = m_table->item(idx.row(), 0);
+        auto *nameItem = m_table->item(idx.row(), 1);
+        if (!codeItem || !nameItem) return;
+        QString code = codeItem->text();
+        QString name = nameItem->text();
+        menu.addAction(QStringLiteral("💰 买入记录"), this, [this, code, name]{ buyStock(code, name); });
+        menu.addSeparator();
         menu.addAction(QStringLiteral("🗑 删除该股票"), this, &MainWindow::removeStock);
         menu.exec(m_table->viewport()->mapToGlobal(pos));
     });
@@ -348,7 +408,6 @@ void MainWindow::onReplyFinished(QNetworkReply *reply)
         m_quotes[code] = m;
     }
 
-    // 更新大盘指数
     auto fmtIdx = [&](const QString &code, QLabel *lbl, const QString &title) {
         if (m_quotes.contains(code)) {
             const auto &q = m_quotes[code];
@@ -366,6 +425,7 @@ void MainWindow::onReplyFinished(QNetworkReply *reply)
     fmtIdx("399006", m_idxCy, QStringLiteral("创业板"));
 
     renderTable();
+    refreshHoldingDialogs();
     updateStatusBar();
     checkAlerts();
     updateMarketStatus();
@@ -405,7 +465,7 @@ void MainWindow::renderTable()
         setItem(7, q["low"]);
         setItem(8, q["prevClose"]);
 
-        // 预警列 — ↑上破价 ↓下破价
+        // 预警列
         QString alertText;
         if (m_alerts.contains(code)) {
             auto a = m_alerts[code];
@@ -419,6 +479,17 @@ void MainWindow::renderTable()
         alertItem->setTextAlignment(Qt::AlignCenter);
         alertItem->setForeground(COLOR_FLAT);
         m_table->setItem(row, 9, alertItem);
+
+        // 持仓按钮列
+        int net = netShares(code);
+        auto *btn = new QPushButton(net > 0 ? QStringLiteral("持仓数据") : QStringLiteral("＋买入"));
+        btn->setStyleSheet(
+            "QPushButton{background:#131f33;color:#c8d6e5;border:1px solid #22334d;"
+            "border-radius:4px;padding:3px 10px;font-size:11px;}"
+            "QPushButton:hover{background:#182742;border-color:#3d7bff;color:white;}");
+        QString name = q["name"];
+        connect(btn, &QPushButton::clicked, this, [this, code]{ openHoldingDetail(code); });
+        m_table->setCellWidget(row, 10, btn);
 
         m_rowOfCode[code] = row;
         ++row;
@@ -480,8 +551,11 @@ void MainWindow::setAlert()
 {
     int row = m_table->currentRow();
     if (row < 0) return;
-    QString code = m_table->item(row, 0)->text();
-    QString name = m_table->item(row, 1)->text();
+    auto *codeItem = m_table->item(row, 0);
+    auto *nameItem = m_table->item(row, 1);
+    if (!codeItem || !nameItem) return;
+    QString code = codeItem->text();
+    QString name = nameItem->text();
     QMap<QString, double> cur = m_alerts.value(code);
 
     bool ok1 = false, ok2 = false;
@@ -509,13 +583,21 @@ void MainWindow::removeStock()
 {
     int row = m_table->currentRow();
     if (row < 0) return;
-    QString code = m_table->item(row, 0)->text();
+    auto *codeItem = m_table->item(row, 0);
+    if (!codeItem) return;
+    QString code = codeItem->text();
     if (QMessageBox::question(this, QStringLiteral("删除"),
             QStringLiteral("确定从自选列表删除 %1 吗？").arg(code)) != QMessageBox::Yes)
         return;
     m_stocks.removeAll(code);
     m_alerts.remove(code);
     m_quotes.remove(code);
+    m_holdings.remove(code);
+    // 关闭该股票的持仓明细窗口
+    if (m_holdingWidgets.contains(code)) {
+        const auto &w = m_holdingWidgets.take(code);
+        if (w.dialog) w.dialog->close();
+    }
     saveConfig();
     renderTable();
 }
@@ -608,6 +690,22 @@ void MainWindow::saveConfig()
         s.endGroup();
     }
     s.endGroup();
+
+    // 持仓持久化
+    s.beginWriteArray(QStringLiteral("holdings"));
+    int hi = 0;
+    for (auto it = m_holdings.begin(); it != m_holdings.end(); ++it) {
+        for (const auto &rec : it.value()) {
+            s.setArrayIndex(hi++);
+            s.setValue(QStringLiteral("code"), rec.code);
+            s.setValue(QStringLiteral("isBuy"), rec.isBuy);
+            s.setValue(QStringLiteral("shares"), rec.shares);
+            s.setValue(QStringLiteral("price"), rec.price);
+            s.setValue(QStringLiteral("date"), rec.date.toString("yyyy-MM-dd"));
+        }
+    }
+    s.endArray();
+
     s.sync();
 }
 
@@ -637,6 +735,21 @@ void MainWindow::loadConfig()
         s.endGroup();
     }
     s.endGroup();
+
+    // 持仓加载
+    n = s.beginReadArray(QStringLiteral("holdings"));
+    for (int i = 0; i < n; ++i) {
+        s.setArrayIndex(i);
+        HoldingRecord rec;
+        rec.code   = s.value(QStringLiteral("code")).toString();
+        rec.isBuy  = s.value(QStringLiteral("isBuy"), true).toBool();
+        rec.shares = s.value(QStringLiteral("shares"), 0).toInt();
+        rec.price  = s.value(QStringLiteral("price"), 0.0).toDouble();
+        rec.date   = QDate::fromString(s.value(QStringLiteral("date")).toString(), "yyyy-MM-dd");
+        if (!rec.code.isEmpty() && rec.shares > 0)
+            m_holdings[rec.code].append(rec);
+    }
+    s.endArray();
 }
 
 void MainWindow::onTableDoubleClicked(int row, int /*column*/)
@@ -659,4 +772,281 @@ void MainWindow::generateReports()
 
     m_statusLabel->setText(QStringLiteral("正在生成今日报告..."));
     m_reporter->generateAll(m_stocks, names);
+}
+
+// ==================== 持仓：买入 / 卖出 / 明细窗口 ====================
+
+void MainWindow::buyStock(const QString &code, const QString &name)
+{
+    double defaultPrice = m_quotes.value(code).value("price", "0").toDouble();
+
+    bool ok1 = false;
+    int shares = QInputDialog::getInt(this, QStringLiteral("买入"),
+        QStringLiteral("%1(%2)\n买入股数:").arg(name, code),
+        100, 1, 100000000, 1, &ok1);
+    if (!ok1) return;
+
+    bool ok2 = false;
+    double price = QInputDialog::getDouble(this, QStringLiteral("买入"),
+        QStringLiteral("%1(%2)\n每股价格:").arg(name, code),
+        defaultPrice, 0.01, 100000, 2, &ok2);
+    if (!ok2) return;
+
+    HoldingRecord rec;
+    rec.code   = code;
+    rec.isBuy  = true;
+    rec.shares = shares;
+    rec.price  = price;
+    rec.date   = QDate::currentDate();
+    m_holdings[code].append(rec);
+
+    saveConfig();
+    renderTable();
+
+    // 如果明细窗口开着，就地刷新
+    if (m_holdingWidgets.contains(code))
+        refreshHoldingDialog(code);
+}
+
+void MainWindow::sellStock(const QString &code, const QString &name)
+{
+    int net = netShares(code);
+    if (net <= 0) {
+        QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("当前无持仓，无法卖出"));
+        return;
+    }
+
+    double defaultPrice = m_quotes.value(code).value("price", "0").toDouble();
+
+    bool ok1 = false;
+    int shares = QInputDialog::getInt(this, QStringLiteral("卖出"),
+        QStringLiteral("%1(%2)\n当前持仓 %3 股\n卖出股数:").arg(name, code).arg(net),
+        net, 1, net, 1, &ok1);
+    if (!ok1) return;
+
+    bool ok2 = false;
+    double price = QInputDialog::getDouble(this, QStringLiteral("卖出"),
+        QStringLiteral("%1(%2)\n卖出价格:").arg(name, code),
+        defaultPrice, 0.01, 100000, 2, &ok2);
+    if (!ok2) return;
+
+    HoldingRecord rec;
+    rec.code   = code;
+    rec.isBuy  = false;
+    rec.shares = shares;
+    rec.price  = price;
+    rec.date   = QDate::currentDate();
+    m_holdings[code].append(rec);
+
+    saveConfig();
+    renderTable();
+
+    // 如果明细窗口开着，就地刷新
+    if (m_holdingWidgets.contains(code))
+        refreshHoldingDialog(code);
+}
+
+void MainWindow::openHoldingDetail(const QString &code)
+{
+    // 已经开着就不重复创建
+    if (m_holdingWidgets.contains(code) && m_holdingWidgets[code].dialog) return;
+
+    QString name = m_quotes.value(code).value("name", code);
+
+    auto *dlg = new QDialog(this, Qt::Window);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(QStringLiteral("%1 (%2) — 持仓明细").arg(name, code));
+    dlg->resize(620, 460);
+    dlg->setMinimumSize(520, 360);
+    dlg->setStyleSheet("background:#0b1220;color:#e8eefc;");
+
+    auto *root = new QVBoxLayout(dlg);
+    root->setContentsMargins(12, 12, 12, 10);
+    root->setSpacing(8);
+
+    // ---- 汇总头部 ----
+    auto *header = new QFrame(dlg);
+    header->setStyleSheet("QFrame{background:#0f1829;border:1px solid #22334d;border-radius:6px;}");
+    header->setFixedHeight(52);
+    auto *hLayout = new QVBoxLayout(header);
+    hLayout->setContentsMargins(14, 6, 14, 6);
+
+    auto *row1 = new QHBoxLayout;
+    auto *netLabel     = new QLabel(header); row1->addWidget(netLabel);
+    auto *avgLabel     = new QLabel(header); row1->addWidget(avgLabel);
+    auto *buyCostLabel = new QLabel(header); row1->addWidget(buyCostLabel);
+    auto *sellLabel    = new QLabel(header); row1->addWidget(sellLabel);
+    auto *curPriceLabel= new QLabel(header); row1->addWidget(curPriceLabel);
+    row1->addStretch();
+    hLayout->addLayout(row1);
+
+    auto *pnlLabel = new QLabel(header);
+    hLayout->addWidget(pnlLabel);
+    root->addWidget(header);
+
+    // ---- 交易记录表格 ----
+    auto *table = new QTableWidget(0, 5, dlg);
+    table->setHorizontalHeaderLabels({QStringLiteral("日期"), QStringLiteral("操作"),
+        QStringLiteral("股数"), QStringLiteral("价格"), QStringLiteral("金额")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->verticalHeader()->setVisible(false);
+    table->setShowGrid(false);
+    table->setStyleSheet(
+        "QTableWidget{background:#131f33;border:1px solid #22334d;border-radius:4px;"
+        "color:#e8eefc;font-size:12px;}"
+        "QTableWidget::item{padding:3px 6px;border-bottom:1px solid #1a2740;}"
+        "QHeaderView::section{background:#1a2740;color:#151a2a;border:none;padding:6px 4px;font-size:11px;}"
+        "QHeaderView::section:hover,QHeaderView::section:pressed{background:#1a2740;color:#151a2a;"
+        "border:none;padding:6px 4px;font-size:11px;}");
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->setColumnWidth(0, 110);  // 日期
+    table->setColumnWidth(1, 50);   // 操作
+    table->setColumnWidth(2, 60);   // 股数
+    table->setColumnWidth(3, 70);   // 价格
+    for (int c = 0; c < 4; ++c)
+        table->horizontalHeader()->setSectionResizeMode(c, QHeaderView::Interactive);
+    for (int c = 0; c < 5; ++c) {
+        auto *hi = table->horizontalHeaderItem(c);
+        if (hi) hi->setForeground(QColor(0x15, 0x1a, 0x2a));
+    }
+    root->addWidget(table, 1);
+
+    // ---- 底部操作栏 ----
+    auto *btnRow = new QHBoxLayout;
+
+    auto *buyBtn = new QPushButton(QStringLiteral("＋ 买入"), dlg);
+    buyBtn->setStyleSheet("QPushButton{background:#3d7bff;color:white;border:none;border-radius:4px;"
+                          "padding:6px 16px;font-size:12px;}QPushButton:hover{background:#2a5fd6;}");
+    connect(buyBtn, &QPushButton::clicked, this, [this, code, name]{ buyStock(code, name); });
+
+    auto *sellBtn = new QPushButton(QStringLiteral("- 卖出"), dlg);
+    sellBtn->setStyleSheet("QPushButton{background:#131f33;color:white;border:1px solid #22334d;border-radius:4px;"
+                           "padding:6px 16px;font-size:12px;}QPushButton:hover{background:#182742;border-color:#3d7bff;}");
+    connect(sellBtn, &QPushButton::clicked, this, [this, code, name]{ sellStock(code, name); });
+
+    auto *delBtn = new QPushButton(QStringLiteral("删除"), dlg);
+    delBtn->setStyleSheet("QPushButton{background:#131f33;color:#ff6b6b;border:1px solid #22334d;border-radius:4px;"
+                          "padding:6px 16px;font-size:12px;}QPushButton:hover{background:#182742;border-color:#ff4d5e;}");
+    connect(delBtn, &QPushButton::clicked, this, [this, code, table]{
+        int row = table->currentRow();
+        if (row < 0) {
+            QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("请先在表格中选中要删除的记录"));
+            return;
+        }
+        if (!m_holdings.contains(code)) return;
+        const auto &v = m_holdings[code];
+        if (row < 0 || row >= v.size()) return;
+        HoldingRecord r = v[row];  // 值拷贝
+        QString detail = QStringLiteral("%1 %2股 @%3")
+            .arg(r.isBuy ? QStringLiteral("买入") : QStringLiteral("卖出"))
+            .arg(r.shares).arg(r.price, 0, 'f', 2);
+        if (QMessageBox::question(this, QStringLiteral("确认删除"),
+                QStringLiteral("确定删除这条记录吗？\n%1\n\n注：删除后不可恢复").arg(detail)) != QMessageBox::Yes)
+            return;
+        m_holdings[code].removeAt(row);
+        if (m_holdings[code].isEmpty()) m_holdings.remove(code);
+        saveConfig();
+        renderTable();
+        // 就地刷新，窗口保留不关闭
+        refreshHoldingDialog(code);
+    });
+
+    btnRow->addWidget(buyBtn);
+    btnRow->addWidget(sellBtn);
+    btnRow->addStretch();
+    btnRow->addWidget(delBtn);
+    root->addLayout(btnRow);
+
+    // 缓存控件引用
+    HoldingWidgets w;
+    w.dialog       = dlg;
+    w.netLabel     = netLabel;
+    w.avgLabel     = avgLabel;
+    w.buyCostLabel = buyCostLabel;
+    w.sellLabel    = sellLabel;
+    w.curPriceLabel= curPriceLabel;
+    w.pnlLabel     = pnlLabel;
+    w.table        = table;
+    m_holdingWidgets[code] = w;
+
+    // dl g关闭时清理
+    connect(dlg, &QDialog::destroyed, this, [this, code]{
+        m_holdingWidgets.remove(code);
+    });
+
+    refreshHoldingDialog(code);
+    dlg->show();
+}
+
+// 就地更新持仓明细窗口（不关旧建新）
+void MainWindow::refreshHoldingDialog(const QString &code)
+{
+    if (!m_holdingWidgets.contains(code)) return;
+    const auto &w = m_holdingWidgets[code];
+    if (!w.dialog) { m_holdingWidgets.remove(code); return; }
+
+    int net = netShares(code);
+    double buyCost = totalBuyCost(code);
+    double sellIncome = totalSellIncome(code);
+    double avg = avgCost(code);
+    double curPrice = m_quotes.value(code).value("price", "0").toDouble();
+    double pnl = holdingPnl(code, curPrice);
+
+    auto lblStyle = QStringLiteral("color:#8fa3c0;font-size:12px;border:none;background:transparent;");
+
+    w.netLabel->setStyleSheet(lblStyle);
+    w.netLabel->setText(QStringLiteral("净持仓: %1 股").arg(net));
+    w.avgLabel->setStyleSheet(lblStyle);
+    w.avgLabel->setText(QStringLiteral("│  均价: %1").arg(avg > 0 ? QString::number(avg, 'f', 2) : "--"));
+    w.buyCostLabel->setStyleSheet(lblStyle);
+    w.buyCostLabel->setText(QStringLiteral("│  总买入: %1").arg(buyCost > 0 ? QString::number(buyCost, 'f', 2) : "--"));
+    w.sellLabel->setStyleSheet(lblStyle);
+    w.sellLabel->setText(QStringLiteral("│  总卖出: %1").arg(sellIncome > 0 ? QString::number(sellIncome, 'f', 2) : "--"));
+    w.curPriceLabel->setStyleSheet(lblStyle);
+    w.curPriceLabel->setText(QStringLiteral("│  当前: %1").arg(curPrice > 0 ? QString::number(curPrice, 'f', 2) : "--"));
+
+    if (net > 0) {
+        QColor pnlColor = pnl > 0 ? COLOR_UP : (pnl < 0 ? COLOR_DOWN : COLOR_FLAT);
+        w.pnlLabel->setStyleSheet(
+            QString("color:%1;font-size:14px;font-weight:bold;border:none;background:transparent;")
+                .arg(pnlColor.name()));
+        w.pnlLabel->setText(QStringLiteral("盈亏  %1%2").arg(pnl >= 0 ? "+" : "").arg(pnl, 0, 'f', 2));
+    } else {
+        w.pnlLabel->setStyleSheet(QStringLiteral("color:#8fa3c0;font-size:12px;border:none;background:transparent;"));
+        w.pnlLabel->setText(QStringLiteral("无持仓"));
+    }
+
+    // 更新表格
+    static const QColor H_BUY(0x2e, 0xe6, 0xa8);
+    static const QColor H_SELL(0xff, 0x4d, 0x5e);
+    const auto &recs = m_holdings.value(code);
+    w.table->setRowCount(recs.size());
+    for (int i = 0; i < recs.size(); ++i) {
+        const auto &r = recs[i];
+        QColor c = r.isBuy ? H_BUY : H_SELL;
+
+        auto setCell = [&](int col, const QString &text, const QColor &fg, Qt::Alignment align) {
+            auto *item = new QTableWidgetItem(text);
+            item->setTextAlignment(align);
+            item->setForeground(fg);
+            w.table->setItem(i, col, item);
+        };
+
+        setCell(0, r.date.toString("yyyy-MM-dd"), COLOR_FLAT, Qt::AlignCenter);
+        setCell(1, r.isBuy ? QStringLiteral("买入") : QStringLiteral("卖出"), c, Qt::AlignCenter);
+        setCell(2, QString::number(r.shares), c, Qt::AlignRight | Qt::AlignVCenter);
+        setCell(3, QString::number(r.price, 'f', 2), c, Qt::AlignRight | Qt::AlignVCenter);
+        double amt = r.shares * r.price;
+        setCell(4, QStringLiteral("%1%2").arg(r.isBuy ? "+" : "-").arg(amt, 0, 'f', 2), c,
+                Qt::AlignRight | Qt::AlignVCenter);
+    }
+}
+
+// 行情刷新时同步更新所有已打开的持仓明细窗口
+void MainWindow::refreshHoldingDialogs()
+{
+    QStringList codes = m_holdingWidgets.keys();
+    for (const QString &code : codes)
+        refreshHoldingDialog(code);
 }

@@ -234,6 +234,8 @@ debug/moc_mainwindow.cpp: ../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QMain
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qbasictimer.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QDate \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qdatetime.h \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QPointer \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qpointer.h \
 		mainwindow.h \
 		debug/moc_predefs.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/bin/moc.exe
@@ -774,6 +776,8 @@ debug/main.o: main.cpp mainwindow.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qbasictimer.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QDate \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qdatetime.h \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QPointer \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qpointer.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QApplication \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/qapplication.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qcoreapplication.h \
@@ -893,6 +897,8 @@ debug/mainwindow.o: mainwindow.cpp mainwindow.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qbasictimer.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QDate \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qdatetime.h \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QPointer \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qpointer.h \
 		stockchartwindow.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QWidget \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QComboBox \
@@ -945,8 +951,6 @@ debug/mainwindow.o: mainwindow.cpp mainwindow.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QIODevice \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtNetwork/QNetworkRequest \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QSharedPointer \
-		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QPointer \
-		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qpointer.h \
 		indicator.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QStringList \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QTableWidget \
@@ -1004,7 +1008,8 @@ debug/mainwindow.o: mainwindow.cpp mainwindow.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/qstandardpaths.h \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QFile \
 		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtGui/QMouseEvent \
-		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QEvent
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtCore/QEvent \
+		../Qt/Qt5.9.7/5.9.7/mingw53_32/include/QtWidgets/QDialog
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o debug/mainwindow.o mainwindow.cpp
 
 debug/klinechart.o: klinechart.cpp klinechart.h \
