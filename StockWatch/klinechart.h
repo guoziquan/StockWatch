@@ -13,7 +13,15 @@
 enum class MainIndicatorType { None, MA, BOLL };
 
 // ==================== 副图指示器类型 ====================
-enum class SubIndicatorType  { Volume, MACD, KDJ };
+enum class SubIndicatorType  { Volume, MACD, KDJ, MoneyFlow };
+
+// ==================== 资金流条目(独立于 indicator.h, 避免循环依赖) ====================
+struct FlowPoint
+{
+    QString date;           // yyyy-MM-dd
+    double  mainNet   = 0;  // 主力净流入(元) = 超大单 + 大单
+    double  mainRatio = 0;  // 主力净占比(%)
+};
 
 // ==================== 单根K线数据 ====================
 struct KLineData
@@ -49,7 +57,10 @@ public:
 private:
     void paintEvent(QPaintEvent *) override;
     KLineData m_data;
-    const KLineData *m_prev = nullptr;
+    // 用值而非指针保存前一根K线：调用方传入的往往是临时对象指针
+    // （如 &vec[vec.size()-2]），一旦外部容器销毁/重排就会悬空。
+    KLineData m_prev;
+    bool m_hasPrev = false;
     bool m_hasData = false;
 };
 
@@ -61,9 +72,12 @@ public:
     explicit KLineChart(QWidget *parent = nullptr);
 
     void setData(const QVector<KLineData> &data);
+    // 设置主力资金流数据(按日期对齐到K线; 缺失日期按 0 处理)
+    void setMoneyFlow(const QVector<FlowPoint> &flows);
     void clear();
     const KLineData &hoveredOrLatest() const;
     bool hasData() const { return !m_data.isEmpty(); }
+    bool hasMoneyFlow() const { return !m_flowNet.isEmpty(); }
 
     // 指示器切换
     void setMainIndicator(MainIndicatorType ind);
@@ -135,6 +149,13 @@ private:
     QVector<double> m_macdDIF, m_macdDEA, m_macdBar;
     QVector<double> m_kdjK, m_kdjD, m_kdjJ;
 
+    // ====== 资金流(与 m_data 等长,按日期对齐; 无数据处为0) ======
+    QVector<double> m_flowNet;     // 主力净流入(元)
+    QVector<double> m_flowRatio;   // 主力净占比(%)
+
+    // ====== 成交量均线(5/10/20 日) ======
+    QVector<double> m_volMa5, m_volMa10, m_volMa20;
+
     // ====== 十字光标 ======
     bool m_crosshair  = false;
     int  m_hoverIdx   = -1;
@@ -169,12 +190,15 @@ private:
     void drawVolumeBars(QPainter &p);
     void drawMACD(QPainter &p);
     void drawKDJ(QPainter &p);
+    void drawMoneyFlow(QPainter &p);
     void drawPriceAxis(QPainter &p);
     void drawSubAxis(QPainter &p);
+    void drawFlowAxisContent(QPainter &p);
     void drawVolumeAxisContent(QPainter &p);
     void drawIndicatorAxisContent(QPainter &p);
     void drawTimeAxis(QPainter &p);
     void drawCrosshair(QPainter &p);
+    void drawCrosshairTags(QPainter &p);
     void drawSepLine(QPainter &p);
     void drawPanelBorder(QPainter &p);
 

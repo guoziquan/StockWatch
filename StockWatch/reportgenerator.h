@@ -10,12 +10,16 @@
 #include <QPointer>
 #include "klinechart.h"   // KLineData
 #include "indicator.h"    // MoneyFlowItem, IndicatorResult
+#include "riskscanner.h"  // RiskResult
+
+class RiskScanner;
 
 class ReportGenerator : public QObject
 {
     Q_OBJECT
 public:
     explicit ReportGenerator(QNetworkAccessManager *net,
+                              RiskScanner *scanner,
                               QObject *parent = nullptr);
 
     /// 为单只股票生成当日报告
@@ -36,6 +40,7 @@ signals:
 private slots:
     void onKLineReply(QNetworkReply *reply);
     void onMoneyFlowReply(QNetworkReply *reply);
+    void onRiskReady(const QString &code, const RiskResult &result);
     void checkAndBuild();
     /// 工作线程完成后在主线程回调
     Q_INVOKABLE void onBuildDone(const QString &path, bool ok);
@@ -56,19 +61,23 @@ private:
     static QString buildReportText(const QString &code, const QString &name,
                                    const QVector<KLineData> &klines,
                                    const QVector<MoneyFlowItem> &flows,
-                                   const IndicatorResult &r);
+                                   const IndicatorResult &r,
+                                   const RiskResult &risk);
 
     // ---- 成员 ----
     QNetworkAccessManager *m_net;
+    RiskScanner         *m_scanner;
     QString m_reportDir;
 
-    // 待处理队列: code -> {name, klineDone, flowDone}
+    // 待处理队列: code -> {name, klineDone, flowDone, riskDone}
     struct PendingItem {
         QString name;
         bool klineReady = false;
         bool flowReady = false;
+        bool riskReady = false;
         QVector<KLineData> klines;
         QVector<MoneyFlowItem> flows;
+        RiskResult risk;
     };
     QMap<QString, PendingItem> m_pending;
 
@@ -83,6 +92,7 @@ private:
         QString baseDir;  // 报告根目录（exe 所在目录）
         QVector<KLineData> klines;
         QVector<MoneyFlowItem> flows;
+        RiskResult risk;
     };
 };
 

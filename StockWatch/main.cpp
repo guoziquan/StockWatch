@@ -6,6 +6,7 @@
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+    a.setQuitOnLastWindowClosed(false);  // 隐藏到托盘时不退出进程
     a.setStyleSheet("QToolTip{color:#151a2a;background:#f0f2f5;border:1px solid #bbb;padding:4px 8px;}");
 
     // 单实例检测

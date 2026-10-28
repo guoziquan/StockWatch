@@ -1,5 +1,6 @@
 #include "reportgenerator.h"
 #include "indicator.h"
+#include "tradingcalendar.h"
 
 #include <QUrlQuery>
 #include <QJsonDocument>
@@ -22,9 +23,11 @@ static const char *MONEYFLOW_API =
 
 // ========== 构造 ==========
 
-ReportGenerator::ReportGenerator(QNetworkAccessManager *net, QObject *parent)
-    : QObject(parent), m_net(net)
+ReportGenerator::ReportGenerator(QNetworkAccessManager *net, RiskScanner *scanner,
+                                 QObject *parent)
+    : QObject(parent), m_net(net), m_scanner(scanner)
 {
+    connect(m_scanner, &RiskScanner::riskReady, this, &ReportGenerator::onRiskReady);
 }
 
 // ========== 公共接口 ==========
@@ -81,6 +84,9 @@ void ReportGenerator::generate(const QString &code, const QString &name)
     PendingItem item;
     item.name = name;
     m_pending[code] = item;
+
+    // 触发造假风险扫描（RiskScanner 自带在途去重，与实时扫描并发时只发一次）
+    m_scanner->scan(code, name);
 
     // 连接回调（用 code 标签区分）
     kreply->setProperty("stockCode", code);
@@ -189,14 +195,22 @@ void ReportGenerator::onMoneyFlowReply(QNetworkReply *reply)
     checkAndBuild();
 }
 
+void ReportGenerator::onRiskReady(const QString &code, const RiskResult &result)
+{
+    if (!m_pending.contains(code)) return;
+    m_pending[code].risk = result;
+    m_pending[code].riskReady = true;
+    checkAndBuild();
+}
+
 // ========== 检查并生成（主线程：查队列 / 工作线程：计算+写文件） ==========
 
 void ReportGenerator::checkAndBuild()
 {
-    // 找出 K线和资金流都返回了的股票
+    // 找出 K线、资金流、风险都返回了的股票
     QList<QString> readyCodes;
     for (auto it = m_pending.begin(); it != m_pending.end(); ++it) {
-        if (it.value().klineReady && it.value().flowReady)
+        if (it.value().klineReady && it.value().flowReady && it.value().riskReady)
             readyCodes.append(it.key());
     }
 
@@ -218,6 +232,7 @@ void ReportGenerator::checkAndBuild()
         data->baseDir = m_reportDir;
         data->klines  = item.klines;
         data->flows   = item.flows;
+        data->risk    = item.risk;
 
         QPointer<ReportGenerator> self(this);
         m_outstandingJobs++;
@@ -225,10 +240,10 @@ void ReportGenerator::checkAndBuild()
             // ---- 工作线程 ----
             IndicatorResult r = IndicatorEngine::compute(data->klines);
             QString text = buildReportText(data->code, data->name,
-                                           data->klines, data->flows, r);
+                                           data->klines, data->flows, r, data->risk);
 
             // 写文件
-            QString path = QStringLiteral("%1/reports/%2/%3.txt")
+            QString path = QStringLiteral("%1/%2/%3.txt")
                 .arg(data->baseDir, data->code,
                      QDate::currentDate().toString("yyyy-MM-dd"));
             QDir().mkpath(QFileInfo(path).absolutePath());
@@ -328,28 +343,40 @@ static QString weekDayName()
 // ========== 市场状态 ==========
 static QString marketStatus(const QVector<KLineData> &klines)
 {
-    QDateTime now = QDateTime::currentDateTime();
-    int wd = now.date().dayOfWeek();
-    int hm = now.time().hour() * 60 + now.time().minute();
+    const QDateTime now = QDateTime::currentDateTime();
 
     // 用K线最后一条时间判断
-    QString lastDate = klines.last().date;
-    QString today = QDate::currentDate().toString("yyyy-MM-dd");
+    const QString lastDate = klines.last().date;
+    const QString today = QDate::currentDate().toString("yyyy-MM-dd");
 
-    if (today != lastDate && wd >= 6)
-        return QStringLiteral("休市 (周末)");
+    // 非交易日(含法定节假日)优先判定
+    if (!TradingCalendar::isTradingDay(now.date())) {
+        const QString hname = TradingCalendar::holidayName(now.date());
+        const QDate nd = TradingCalendar::nextTradingDay(now.date());
+        const QString ndStr = nd.isValid()
+            ? nd.toString(QStringLiteral("yyyy-MM-dd")) : QStringLiteral("--");
+        const QString label = hname.isEmpty() ? QStringLiteral("周末") : hname;
+        return QStringLiteral("休市 (%1, 下一交易日 %2)").arg(label, ndStr);
+    }
+
+    // 今天是交易日，但K线最后一条不是今天 —— 说明今日数据尚未更新
     if (today != lastDate)
         return QStringLiteral("已收盘 (行情为最近交易日 %1)").arg(lastDate);
 
-    if (wd >= 6)
-        return QStringLiteral("休市 (周末)");
-    if (hm >= 9*60+15 && hm <= 15*60) {
-        if ((hm >= 9*60+30 && hm <= 11*60+30) || (hm >= 13*60 && hm <= 15*60))
-            return QStringLiteral("交易中");
-        else if (hm < 9*60+30)
-            return QStringLiteral("集合竞价");
-        else
-            return QStringLiteral("午间休市");
+    switch (TradingCalendar::phaseAt(now)) {
+    case SessionPhase::CallAuction:
+    case SessionPhase::CallAuctionEnd:
+        return QStringLiteral("集合竞价");
+    case SessionPhase::MorningTrading:
+    case SessionPhase::AfternoonTrading:
+        return QStringLiteral("交易中");
+    case SessionPhase::LunchBreak:
+        return QStringLiteral("午间休市");
+    case SessionPhase::PreOpen:
+        return QStringLiteral("未开盘");
+    case SessionPhase::AfterClose:
+    case SessionPhase::Closed:
+        break;
     }
     return QStringLiteral("已收盘");
 }
@@ -359,7 +386,8 @@ static QString marketStatus(const QVector<KLineData> &klines)
 QString ReportGenerator::buildReportText(const QString &code, const QString &name,
                                           const QVector<KLineData> &klines,
                                           const QVector<MoneyFlowItem> &flows,
-                                          const IndicatorResult &r)
+                                          const IndicatorResult &r,
+                                          const RiskResult &risk)
 {
     const auto &last = klines.last();
     const auto &prev = klines[klines.size() - 2];
@@ -510,6 +538,19 @@ QString ReportGenerator::buildReportText(const QString &code, const QString &nam
     } else {
         for (const QString &w : r.warnings)
             s += QStringLiteral("  ⚠ %1\n").arg(w);
+    }
+    s += QStringLiteral("\n");
+
+    // ------ 造假风险 ------
+    s += QStringLiteral("【造假风险】\n");
+    if (!risk.hasRisk) {
+        s += QStringLiteral("  未发现明显的财务造假/监管风险信号\n");
+    } else {
+        for (const QString &h : risk.hits)
+            s += QStringLiteral("  ⚠ 公告: %1\n").arg(h);
+        for (const QString &f : risk.redFlags)
+            s += QStringLiteral("  ⚠ 财务: %1\n").arg(f);
+        s += QStringLiteral("  汇总: %1\n").arg(risk.summary);
     }
     s += QStringLiteral("\n");
 

@@ -6,6 +6,7 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QToolTip>
+#include <QHash>
 #include <QtMath>
 #include <algorithm>
 
@@ -48,6 +49,12 @@ static const QColor KDJ_K_COLOR(0xff, 0xc1, 0x07);
 static const QColor KDJ_D_COLOR(0xe0, 0x40, 0xfb);
 static const QColor KDJ_J_COLOR(0x00, 0xe5, 0xff);
 
+// ============= 成交量均线颜色 =============
+// 与主图均线区分：量能均线用柔和色，避免与红绿量柱冲突
+static const QColor VOL_MA5_COLOR (0xff, 0xd5, 0x4f);
+static const QColor VOL_MA10_COLOR(0xc7, 0x9b, 0xff);
+static const QColor VOL_MA20_COLOR(0x6d, 0xd4, 0xe8);
+
 // ============= 字体 =============
 static QFont axisFont()     { QFont f("Consolas", 8); return f; }
 static QFont timeFont()     { QFont f("Consolas", 7); return f; }
@@ -81,6 +88,7 @@ void KLineChart::clear()
     m_bollUp.clear(); m_bollMid.clear(); m_bollDown.clear();
     m_macdDIF.clear(); m_macdDEA.clear(); m_macdBar.clear();
     m_kdjK.clear(); m_kdjD.clear(); m_kdjJ.clear();
+    m_flowNet.clear(); m_flowRatio.clear();
     m_crosshair = false;
     m_hoverIdx = -1;
     update();
@@ -150,6 +158,22 @@ void KLineChart::computeIndicatorSeries()
     IndicatorEngine::bollSeries(m_data, m_bollUp, m_bollMid, m_bollDown);
     IndicatorEngine::macdSeries(m_data, m_macdDIF, m_macdDEA, m_macdBar);
     IndicatorEngine::kdjSeries(m_data, m_kdjK, m_kdjD, m_kdjJ);
+
+    // 成交量均线（用于判断放量/缩量）
+    auto computeVolMA = [&](QVector<double> &out, int period) {
+        out.resize(n);
+        out.fill(0.0);
+        if (n < period) return;
+        double sum = 0;
+        for (int i = 0; i < n; ++i) {
+            sum += m_data[i].volume;
+            if (i >= period) sum -= m_data[i - period].volume;
+            if (i >= period - 1) out[i] = sum / period;
+        }
+    };
+    computeVolMA(m_volMa5, 5);
+    computeVolMA(m_volMa10, 10);
+    computeVolMA(m_volMa20, 20);
 }
 
 // =====================================================================
@@ -248,6 +272,8 @@ void KLineChart::drawChart(QPainter &p)
         drawMACD(p);
     else if (m_subIndicator == SubIndicatorType::KDJ)
         drawKDJ(p);
+    else if (m_subIndicator == SubIndicatorType::MoneyFlow)
+        drawMoneyFlow(p);
 
     // 3. 时间轴 + 分隔线 + 图表侧边栏竖线 + 十字光标
     drawTimeAxis(p);
@@ -259,6 +285,10 @@ void KLineChart::drawChart(QPainter &p)
     // 4. 最后绘制坐标轴文字，确保不被任何图形覆盖
     drawPriceAxis(p);
     drawSubAxis(p);
+
+    // 5. 坐标轴浮标必须画在轴文字之后，否则会被轴标签遮住
+    if (m_crosshair && m_hoverIdx >= 0)
+        drawCrosshairTags(p);
 }
 
 // =====================================================================
@@ -462,10 +492,16 @@ void KLineChart::drawVolumeBars(QPainter &p)
     int start = visibleStart(), vis = visibleCount();
     if (vis <= 0) { p.restore(); return; }
 
+    // 量能上限：同时考虑成交量柱与均线，避免均线被裁
     double maxV = 0;
-    for (int i = start; i < m_data.size() && i < start + vis; ++i)
-        if (m_data[i].volume > maxV) maxV = m_data[i].volume;
-    if (maxV == 0) maxV = 1;
+    for (int cnt = 0; cnt < vis; ++cnt) {
+        int i = start + cnt;
+        if (i >= m_data.size()) break;
+        maxV = qMax(maxV, m_data[i].volume);
+        if (i < m_volMa20.size()) maxV = qMax(maxV, m_volMa20[i]);
+    }
+    if (maxV <= 0) maxV = 1;
+    maxV *= 1.06;   // 顶部留白
 
     double hw = qMax(0.5, m_candleW * 0.38);
     double bodyW = m_candleW * 0.76;
@@ -483,6 +519,192 @@ void KLineChart::drawVolumeBars(QPainter &p)
         double cx = candleCenterX(cnt);
         p.fillRect(QRectF(cx - hw, subPlotRect.bottom() - vh, bodyW, vh), c);
     }
+
+    // ---- 成交量均线（MA5 / MA10 / MA20）----
+    auto volY = [&](double v) {
+        return subPlotRect.bottom() - v / maxV * subPlotRect.height();
+    };
+    drawIndicatorLine(p, m_volMa5,  start, vis, volY, QPen(VOL_MA5_COLOR, 1.2));
+    drawIndicatorLine(p, m_volMa10, start, vis, volY, QPen(VOL_MA10_COLOR, 1.2));
+    drawIndicatorLine(p, m_volMa20, start, vis, volY, QPen(VOL_MA20_COLOR, 1.2));
+
+    // ---- 图例：显示"当前关注"那根K线的量能 ----
+    // 十字光标激活时跟随光标所指的那根，否则显示最右侧（最新）一根。
+    // 早期固定用最右侧，导致光标停在历史K线时，图例与右侧面板数据不一致。
+    p.setFont(legendFont());
+    auto fmtVolL = [](double v) -> QString {
+        if (v >= 1e8) return QString::number(v / 1e8, 'f', 2) + QStringLiteral("亿");
+        if (v >= 1e4) return QString::number(v / 1e4, 'f', 0) + QStringLiteral("万");
+        return QString::number(v, 'f', 0);
+    };
+    int lx = subPlotRect.left() + 4;
+    int ly = subPlotRect.top() + 2;
+    auto legend = [&](const QString &txt, const QColor &c) {
+        p.setPen(c);
+        const int tw = p.fontMetrics().width(txt) + 6;
+        p.drawText(lx, ly, tw, 14, Qt::AlignLeft, txt);
+        lx += tw;
+    };
+    int legendIdx = qMin(m_data.size() - 1, start + vis - 1);
+    if (m_crosshair && m_hoverIdx >= 0 && m_hoverIdx < m_data.size())
+        legendIdx = m_hoverIdx;
+    if (legendIdx >= 0) {
+        const double vol = m_data[legendIdx].volume;
+        const double ma5 = (legendIdx < m_volMa5.size()) ? m_volMa5[legendIdx] : 0;
+        // 量比：相对 5 日均量，辅助判断放量/缩量
+        QString ratioTxt;
+        QColor ratioColor = C_TEXT;
+        if (ma5 > 0) {
+            const double ratio = vol / ma5;
+            ratioTxt = QStringLiteral(" 量比 %1").arg(ratio, 0, 'f', 2);
+            if (ratio >= 1.5)      ratioColor = C_UP;      // 放量
+            else if (ratio <= 0.6) ratioColor = C_DOWN;    // 缩量
+        }
+        p.setPen(C_TEXT);
+        QString t = QStringLiteral("成交量 ") + fmtVolL(vol);
+        int tw = p.fontMetrics().width(t) + 6;
+        p.drawText(lx, ly, tw, 14, Qt::AlignLeft, t);
+        lx += tw;
+        if (!ratioTxt.isEmpty()) {
+            p.setPen(ratioColor);
+            p.drawText(lx, ly, p.fontMetrics().width(ratioTxt) + 6, 14,
+                       Qt::AlignLeft, ratioTxt);
+            lx += p.fontMetrics().width(ratioTxt) + 6;
+        }
+    }
+    // 均线图例带数值：直接读出当前这根的量能均线水平
+    auto volMaAt = [&](const QVector<double> &s) -> QString {
+        if (legendIdx < 0 || legendIdx >= s.size() || s[legendIdx] <= 0) return QString();
+        return fmtVolL(s[legendIdx]);
+    };
+    legend(volMaAt(m_volMa5).isEmpty()  ? QStringLiteral("MA5")
+                                        : QStringLiteral("MA5 ") + volMaAt(m_volMa5),  VOL_MA5_COLOR);
+    legend(volMaAt(m_volMa10).isEmpty() ? QStringLiteral("MA10")
+                                        : QStringLiteral("MA10 ") + volMaAt(m_volMa10), VOL_MA10_COLOR);
+    legend(volMaAt(m_volMa20).isEmpty() ? QStringLiteral("MA20")
+                                        : QStringLiteral("MA20 ") + volMaAt(m_volMa20), VOL_MA20_COLOR);
+
+    p.restore();
+}
+
+// =====================================================================
+// 资金流数据（按日期对齐到K线）
+// =====================================================================
+void KLineChart::setMoneyFlow(const QVector<FlowPoint> &flows)
+{
+    m_flowNet.clear();
+    m_flowRatio.clear();
+    if (flows.isEmpty() || m_data.isEmpty()) { update(); return; }
+
+    QHash<QString, int> idxOfDate;
+    idxOfDate.reserve(flows.size());
+    for (int i = 0; i < flows.size(); ++i)
+        idxOfDate.insert(flows[i].date.left(10), i);
+
+    const int n = m_data.size();
+    m_flowNet.resize(n);
+    m_flowRatio.resize(n);
+    int matched = 0;
+    for (int i = 0; i < n; ++i) {
+        const int fi = idxOfDate.value(m_data[i].date.left(10), -1);
+        if (fi >= 0) {
+            m_flowNet[i]   = flows[fi].mainNet;
+            m_flowRatio[i] = flows[fi].mainRatio;
+            ++matched;
+        } else {
+            m_flowNet[i]   = 0;
+            m_flowRatio[i] = 0;
+        }
+    }
+    // 完全无法匹配(如分钟线周期)时清空，避免显示误导性空图
+    if (matched == 0) { m_flowNet.clear(); m_flowRatio.clear(); }
+    update();
+}
+
+// =====================================================================
+// 资金流副图：主力净流入柱 + 零轴
+// =====================================================================
+void KLineChart::drawMoneyFlow(QPainter &p)
+{
+    p.save();
+    p.setClipRect(subPlotRect);
+
+    int start = visibleStart(), vis = visibleCount();
+    if (vis <= 0) { p.restore(); return; }
+
+    if (m_flowNet.isEmpty()) {
+        p.setFont(legendFont());
+        p.setPen(C_TEXT);
+        p.drawText(subPlotRect, Qt::AlignCenter,
+                   QStringLiteral("暂无主力资金流数据（分钟线周期不支持）"));
+        p.restore();
+        return;
+    }
+
+    double maxV = 0, minV = 0;
+    for (int cnt = 0; cnt < vis; ++cnt) {
+        int i = start + cnt;
+        if (i >= m_flowNet.size()) break;
+        maxV = qMax(maxV, m_flowNet[i]);
+        minV = qMin(minV, m_flowNet[i]);
+    }
+    if (maxV == 0 && minV == 0) maxV = 1;
+    if (maxV == minV) { maxV += 1; minV -= 1; }
+    const double mrg = (maxV - minV) * 0.08;
+    maxV += mrg; minV -= mrg;
+
+    auto yPos = [&](double v) {
+        return subPlotRect.bottom() - (v - minV) / (maxV - minV) * subPlotRect.height();
+    };
+
+    const int zy = (int)yPos(0);
+    p.setPen(QPen(C_GRID, 1, Qt::DotLine));
+    p.drawLine(subPlotRect.left(), zy, subPlotRect.right(), zy);
+
+    const double hw = qMax(0.5, m_candleW * 0.38);
+    const double bodyW = m_candleW * 0.76;
+    const QColor inColor (0xff, 0x4d, 0x5e, 190);
+    const QColor outColor(0x2e, 0xe6, 0xa8, 190);
+
+    for (int cnt = 0; cnt < vis; ++cnt) {
+        int i = start + cnt;
+        if (i >= m_flowNet.size()) break;
+        const double v = m_flowNet[i];
+        const QColor c = (v >= 0) ? inColor : outColor;
+        const double yv = yPos(v);
+        double barH = qAbs(yv - zy);
+        if (barH < 1.0) barH = 1.0;
+        const double cx = candleCenterX(cnt);
+        p.fillRect(QRectF(cx - hw, qMin(zy, (int)yv), bodyW, barH), c);
+    }
+
+    // 图例：可见区间主力净流入合计
+    p.setFont(legendFont());
+    double sum = 0;
+    int counted = 0;
+    for (int cnt = 0; cnt < vis; ++cnt) {
+        int i = start + cnt;
+        if (i >= m_flowNet.size()) break;
+        sum += m_flowNet[i];
+        ++counted;
+    }
+    auto fmtMoney = [](double v) -> QString {
+        const double a = qAbs(v);
+        if (a >= 1e8) return QString::number(v / 1e8, 'f', 2) + QStringLiteral("亿");
+        if (a >= 1e4) return QString::number(v / 1e4, 'f', 0) + QStringLiteral("万");
+        return QString::number(v, 'f', 0);
+    };
+    int lx = subPlotRect.left() + 4;
+    const QString t1 = QStringLiteral("主力净流入 %1%2")
+                           .arg(sum >= 0 ? "+" : "").arg(fmtMoney(sum));
+    p.setPen((sum >= 0) ? C_UP : C_DOWN);
+    p.drawText(lx, subPlotRect.top() + 2,
+               p.fontMetrics().width(t1) + 4, 14, Qt::AlignLeft, t1);
+    lx += p.fontMetrics().width(t1) + 8;
+    p.setPen(C_TEXT);
+    p.drawText(lx, subPlotRect.top() + 2, 200, 14, Qt::AlignLeft,
+               QStringLiteral("(可见%1日)").arg(counted));
+
     p.restore();
 }
 
@@ -653,7 +875,11 @@ void KLineChart::drawPriceAxis(QPainter &p)
         int y = (int)(priceAxisRect.bottom() - frac * priceAxisRect.height());
         QString label = QString::number(t, 'f', 2);
         int lw = fm.width(label);
-        QRect textR(priceAxisRect.right() - lw - 2, y - halfH, lw, textH);
+        // 夹紧垂直位置：顶部/底部的刻度若居中会有一半被裁掉（只显示半截数字）
+        int ty = y - halfH;
+        if (ty < priceAxisRect.top())            ty = priceAxisRect.top();
+        if (ty > priceAxisRect.bottom() - textH) ty = priceAxisRect.bottom() - textH;
+        QRect textR(priceAxisRect.right() - lw - 2, ty, lw, textH);
         p.drawText(textR, Qt::AlignRight | Qt::AlignVCenter, label);
     }
     p.restore();
@@ -666,8 +892,70 @@ void KLineChart::drawSubAxis(QPainter &p)
 {
     if (m_subIndicator == SubIndicatorType::Volume)
         drawVolumeAxisContent(p);
+    else if (m_subIndicator == SubIndicatorType::MoneyFlow)
+        drawFlowAxisContent(p);
     else
         drawIndicatorAxisContent(p);
+}
+
+// 资金流副图坐标轴：万/亿 中文单位
+void KLineChart::drawFlowAxisContent(QPainter &p)
+{
+    p.save();
+    p.setFont(axisFont());
+    QFontMetrics fm(p.font());
+    const int textH = fm.height();
+    const int halfH = textH / 2;
+    p.setClipRect(subAxisRect.adjusted(0, -halfH, 0, halfH));
+    p.setPen(C_TEXT);
+
+    if (m_flowNet.isEmpty()) {
+        p.drawText(QRect(subAxisRect.left(), subAxisRect.center().y() - textH / 2,
+                         subAxisRect.width(), textH),
+                   Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("--"));
+        p.restore();
+        return;
+    }
+
+    int start = visibleStart(), vis = visibleCount();
+    double maxV = 0, minV = 0;
+    for (int cnt = 0; cnt < vis; ++cnt) {
+        int i = start + cnt;
+        if (i >= m_flowNet.size()) break;
+        maxV = qMax(maxV, m_flowNet[i]);
+        minV = qMin(minV, m_flowNet[i]);
+    }
+    if (maxV == 0 && minV == 0) { maxV = 1e8; minV = -1e8; }
+    if (maxV == minV) { maxV += 1e6; minV -= 1e6; }
+    const double mrg = (maxV - minV) * 0.08;
+    maxV += mrg; minV -= mrg;
+
+    auto fmtMoney = [](double v) -> QString {
+        const double a = qAbs(v);
+        if (a >= 1e8) return QString::number(v / 1e8, 'f', 2) + QStringLiteral("亿");
+        if (a >= 1e4) return QString::number(v / 1e4, 'f', 1) + QStringLiteral("万");
+        return QString::number(v, 'f', 0);
+    };
+
+    const int ticks = qMin(4, qMax(3, subAxisRect.height() / 26));
+    for (int i = 0; i <= ticks; ++i) {
+        const double v = minV + (maxV - minV) * i / ticks;
+        const int y = subAxisRect.bottom() - subAxisRect.height() * i / ticks;
+        const QString label = fmtMoney(v);
+        const int lw = fm.width(label);
+        p.drawText(QRect(subAxisRect.right() - lw - 2, y - halfH, lw, textH),
+                   Qt::AlignRight | Qt::AlignVCenter, label);
+    }
+
+    // 零轴标签（若在可见范围内）
+    if (minV < 0 && maxV > 0) {
+        const int zy = (int)(subAxisRect.bottom() - (0 - minV) / (maxV - minV) * subAxisRect.height());
+        const QString zl = QStringLiteral("0");
+        const int lw = fm.width(zl);
+        p.drawText(QRect(subAxisRect.right() - lw - 2, zy - halfH, lw, textH),
+                   Qt::AlignRight | Qt::AlignVCenter, zl);
+    }
+    p.restore();
 }
 
 void KLineChart::drawVolumeAxisContent(QPainter &p)
@@ -708,7 +996,10 @@ void KLineChart::drawVolumeAxisContent(QPainter &p)
         int y = subAxisRect.bottom() - subAxisRect.height() * i / ticks;
         QString label = fmtVol(v);
         int lw = fm.width(label);
-        QRect textR(subAxisRect.right() - lw - 2, y - halfH, lw, textH);
+        int ty = y - halfH;
+        if (ty < subAxisRect.top())              ty = subAxisRect.top();
+        if (ty > subAxisRect.bottom() - textH)   ty = subAxisRect.bottom() - textH;
+        QRect textR(subAxisRect.right() - lw - 2, ty, lw, textH);
         p.drawText(textR, Qt::AlignRight | Qt::AlignVCenter, label);
     }
     p.restore();
@@ -812,6 +1103,13 @@ void KLineChart::drawTimeAxis(QPainter &p)
         int lw = fm.width(label);
         int lx = (int)cx - lw / 2;
 
+        // 最左侧/最右侧的标签居中后会超出绘制区被 clip 裁掉（出现 "-04-24"），
+        // 这里把标签夹紧到可见范围内，保证日期完整可读。
+        const int minX = timeAxisRect.left();
+        const int maxX = timeAxisRect.right() - lw;
+        if (lx < minX) lx = minX;
+        if (lx > maxX) lx = maxX;
+
         if (lx < lastLabelRight + 4) continue;
         lastLabelRight = lx + lw;
 
@@ -880,10 +1178,154 @@ void KLineChart::drawCrosshair(QPainter &p)
                QPointF(cx, subPlotRect.bottom()));
 
     int my = m_mousePos.y();
-    if (mainPlotRect.contains(m_mousePos)) {
+    bool inMain = mainPlotRect.contains(m_mousePos);
+    bool inSub  = subPlotRect.contains(m_mousePos);
+    if (inMain) {
         p.drawLine(mainPlotRect.left(), my, mainPlotRect.right(), my);
-    } else if (subPlotRect.contains(m_mousePos)) {
+    } else if (inSub) {
         p.drawLine(subPlotRect.left(), my, subPlotRect.right(), my);
+    }
+
+    p.restore();
+}
+
+// 绘制十字光标在坐标轴上的数值浮标 + 时间轴日期浮标
+// 注意：必须在 drawPriceAxis/drawSubAxis 之后调用，否则会被轴标签覆盖
+void KLineChart::drawCrosshairTags(QPainter &p)
+{
+    p.save();
+    p.setFont(axisFont());
+    QFontMetrics fm(p.font());
+
+    const int start = visibleStart();
+    const int vis = visibleCount();
+    const int cnt = m_hoverIdx - start;
+    if (cnt < 0 || cnt >= vis) { p.restore(); return; }
+    const int idx = m_hoverIdx;
+    if (idx < 0 || idx >= m_data.size()) { p.restore(); return; }
+
+    const int mouseY = m_mousePos.y();
+    const bool inMain = mainPlotRect.contains(m_mousePos);
+    const bool inSub  = subPlotRect.contains(m_mousePos);
+
+    // 深色底 + 亮边的小标签
+    auto drawTag = [&](const QRect &r, const QString &text, const QColor &fg) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x2a, 0x3d, 0x5c, 235));
+        p.drawRoundedRect(r, 2, 2);
+        p.setPen(QPen(QColor(0x4d, 0xa3, 0xff), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(r, 2, 2);
+        p.setPen(fg);
+        p.drawText(r, Qt::AlignCenter, text);
+    };
+
+    // ---- 价格轴浮标 ----
+    if (inMain && !m_data.isEmpty()) {
+        // 复用主图价格范围计算逻辑
+        double maxP = 0, minP = 1e15;
+        for (int i = start; i < m_data.size() && i < start + vis; ++i) {
+            if (m_data[i].high > maxP) maxP = m_data[i].high;
+            if (m_data[i].low  < minP) minP = m_data[i].low;
+        }
+        if (maxP > minP) {
+            const double margin = (maxP - minP) * 0.04;
+            maxP += margin; minP -= margin;
+            const double frac = double(mainPlotRect.bottom() - mouseY) / mainPlotRect.height();
+            const double price = minP + frac * (maxP - minP);
+            const QString txt = QString::number(price, 'f', 2);
+            // 轴宽 56px 放不下带 padding 的文字，此处取实际文字宽度，
+            // 保证读数完整显示；浮标覆盖在轴上会遮住同高度的刻度，
+            // 这与专业行情软件一致（当前读数优先）。
+            const int tw = qMax(fm.width(txt) + 10, priceAxisRect.width());
+            const int th = fm.height() + 4;
+            int ty = mouseY - th / 2;
+            ty = qBound(priceAxisRect.top(), ty, priceAxisRect.bottom() - th);
+            QRect tag(priceAxisRect.left(), ty, tw, th);
+            drawTag(tag, txt, QColor(0xff, 0xe0, 0x8a));
+        }
+    }
+
+    // ---- 副图轴浮标 ----
+    if (inSub) {
+        QString txt;
+        bool valid = true;
+
+        if (m_subIndicator == SubIndicatorType::Volume) {
+            double maxVol = 0;
+            for (int i = start; i < m_data.size() && i < start + vis; ++i)
+                maxVol = qMax(maxVol, m_data[i].volume);
+            if (maxVol <= 0) maxVol = 1;
+            const double frac = double(subPlotRect.bottom() - mouseY) / subPlotRect.height();
+            const double v = frac * maxVol;
+            if (v >= 1e8)      txt = QString::number(v / 1e8, 'f', 2) + QStringLiteral("亿");
+            else if (v >= 1e4) txt = QString::number(v / 1e4, 'f', 1) + QStringLiteral("万");
+            else               txt = QString::number(v, 'f', 0);
+        } else if (m_subIndicator == SubIndicatorType::MoneyFlow && !m_flowNet.isEmpty()) {
+            double mx = 0, mn = 0;
+            for (int i = start; i < m_data.size() && i < start + vis && i < m_flowNet.size(); ++i) {
+                mx = qMax(mx, m_flowNet[i]);
+                mn = qMin(mn, m_flowNet[i]);
+            }
+            if (mx == 0 && mn == 0) { mx = 1e8; mn = -1e8; }
+            if (mx == mn) { mx += 1e6; mn -= 1e6; }
+            const double mrg = (mx - mn) * 0.08;
+            mx += mrg; mn -= mrg;
+            const double frac = double(subPlotRect.bottom() - mouseY) / subPlotRect.height();
+            const double v = mn + frac * (mx - mn);
+            const double a = qAbs(v);
+            if (a >= 1e8)      txt = QString::number(v / 1e8, 'f', 2) + QStringLiteral("亿");
+            else if (a >= 1e4) txt = QString::number(v / 1e4, 'f', 0) + QStringLiteral("万");
+            else               txt = QString::number(v, 'f', 0);
+        } else if (m_subIndicator == SubIndicatorType::MACD) {
+            double mx = -1e15, mn = 1e15;
+            for (int i = start; i < m_data.size() && i < start + vis; ++i) {
+                mx = qMax(mx, qMax(m_macdDIF[i], qMax(m_macdDEA[i], m_macdBar[i])));
+                mn = qMin(mn, qMin(m_macdDIF[i], qMin(m_macdDEA[i], m_macdBar[i])));
+            }
+            if (mn > 0) mn = -0.01;
+            if (mx < 0) mx = 0.01;
+            if (mx <= mn) { mx = mn + 1; mn -= 1; }
+            const double mrg = (mx - mn) * 0.05;
+            mx += mrg; mn -= mrg;
+            const double frac = double(subPlotRect.bottom() - mouseY) / subPlotRect.height();
+            txt = QString::number(mn + frac * (mx - mn), 'f', 3);
+        } else if (m_subIndicator == SubIndicatorType::KDJ) {
+            double mx = 100, mn = 0;
+            for (int i = start; i < m_data.size() && i < start + vis; ++i) {
+                if (m_kdjK[i] == 0) continue;
+                mx = qMax(mx, qMax(m_kdjK[i], qMax(m_kdjD[i], m_kdjJ[i])));
+                mn = qMin(mn, qMin(m_kdjK[i], qMin(m_kdjD[i], m_kdjJ[i])));
+            }
+            if (mx <= mn) { mx = mn + 1; mn -= 1; }
+            const double mrg = (mx - mn) * 0.05;
+            mx += mrg; mn -= mrg;
+            const double frac = double(subPlotRect.bottom() - mouseY) / subPlotRect.height();
+            txt = QString::number(mn + frac * (mx - mn), 'f', 2);
+        } else {
+            valid = false;
+        }
+
+        if (valid && !txt.isEmpty()) {
+            const int tw = qMax(fm.width(txt) + 10, subAxisRect.width());
+            const int th = fm.height() + 4;
+            int ty = mouseY - th / 2;
+            ty = qBound(subAxisRect.top(), ty, subAxisRect.bottom() - th);
+            QRect tag(subAxisRect.left(), ty, tw, th);
+            drawTag(tag, txt, QColor(0xff, 0xe0, 0x8a));
+        }
+    }
+
+    // ---- 时间轴日期浮标 ----
+    {
+        const QString dateTxt = m_data[idx].date;
+        const int tw = fm.width(dateTxt) + 10;
+        const int th = fm.height() + 4;
+        const double cx = candleCenterX(cnt);
+        int tx = int(cx) - tw / 2;
+        tx = qBound(timeAxisRect.left(), tx, timeAxisRect.right() - tw);
+        QRect tag(tx, timeAxisRect.top() + (timeAxisRect.height() - th) / 2, tw, th);
+        drawTag(tag, dateTxt, QColor(0xe8, 0xee, 0xfc));
     }
 
     p.restore();
@@ -1061,7 +1503,13 @@ KLineInfoPanel::KLineInfoPanel(QWidget *parent)
 void KLineInfoPanel::setData(const KLineData &kd, const KLineData *prevClose)
 {
     m_data = kd;
-    m_prev = prevClose;
+    if (prevClose) {
+        m_prev = *prevClose;   // 值拷贝，杜绝悬空指针
+        m_hasPrev = true;
+    } else {
+        m_prev = KLineData();
+        m_hasPrev = false;
+    }
     m_hasData = true;
     update();
 }
@@ -1105,7 +1553,7 @@ void KLineInfoPanel::paintEvent(QPaintEvent *)
 
     QColor col = KLineInfoPanel::C_FLAT;
     double chg = m_data.chgPct;
-    double prevC = m_prev ? m_prev->close : 0;
+    double prevC = m_hasPrev ? m_prev.close : 0;
     if (qAbs(prevC) > 1e-9) {
         chg = (m_data.close - prevC) / prevC * 100;
         col = (chg > 0) ? C_UP : ((chg < 0) ? C_DOWN : C_FLAT);
@@ -1122,14 +1570,23 @@ void KLineInfoPanel::paintEvent(QPaintEvent *)
     drawRow(QStringLiteral("日期"), m_data.date.left(10), KLineChart::C_TEXT);
     drawRow(QStringLiteral("收盘"),
             QString::number(m_data.close, 'f', 2), col);
+    // 涨跌额：以昨收(前一根K线收盘)为基准；无昨收时显示 "--" 而非把收盘价当涨跌
+    const double prevClose = (m_hasPrev && m_prev.close > 0) ? m_prev.close : 0.0;
+    if (prevClose > 0) {
+        const double chgAmt = m_data.close - prevClose;
+        drawRow(QStringLiteral("涨跌"),
+                QString("%1%2").arg(chgAmt > 0 ? "+" : "").arg(chgAmt, 0, 'f', 2), col);
+    } else {
+        drawRow(QStringLiteral("涨跌"), QStringLiteral("--"), col);
+    }
 
-    double chgAmt = m_data.close - prevC;
-    if (qAbs(prevC) < 1e-9) chgAmt = m_data.close - (m_prev ? m_prev->close : m_data.close);
-    drawRow(QStringLiteral("涨跌"),
-            QString("%1%2").arg(chgAmt > 0 ? "+" : "").arg(chgAmt, 0, 'f', 2), col);
-
-    drawRow(QStringLiteral("涨幅"),
-            QString("%1%2%").arg(chg > 0 ? "+" : "").arg(chg, 0, 'f', 2), col);
+    const bool hasPrevClose = (m_hasPrev && m_prev.close > 0);
+    if (hasPrevClose) {
+        drawRow(QStringLiteral("涨幅"),
+                QString("%1%2%").arg(chg > 0 ? "+" : "").arg(chg, 0, 'f', 2), col);
+    } else {
+        drawRow(QStringLiteral("涨幅"), QStringLiteral("--"), KLineInfoPanel::C_FLAT);
+    }
 
     // 分隔线2 — 价格与OHLC之间
     y += 4;
@@ -1148,8 +1605,10 @@ void KLineInfoPanel::paintEvent(QPaintEvent *)
     drawInfoRow(QStringLiteral("最高：%1").arg(m_data.high, 0, 'f', 2));
     drawInfoRow(QStringLiteral("最低：%1").arg(m_data.low, 0, 'f', 2));
 
-    double pc = m_prev ? m_prev->close : 0;
-    drawInfoRow(QStringLiteral("昨收：%1").arg(pc > 0 ? QString::number(pc, 'f', 2) : "--"));
+    // 昨收：优先取前一根K线的收盘价
+    const double pc = (m_hasPrev && m_prev.close > 0) ? m_prev.close : 0.0;
+    drawInfoRow(QStringLiteral("昨收：%1")
+                    .arg(pc > 0 ? QString::number(pc, 'f', 2) : QStringLiteral("--")));
     y += lineH;
 
     // 分隔线3 — OHLC与成交量之间
@@ -1173,17 +1632,93 @@ void KLineInfoPanel::paintEvent(QPaintEvent *)
         if (v >= 1e4) return QString::number(v / 1e4, 'f', 0) + QStringLiteral("万");
         return QString::number(v, 'f', 0);
     };
-    p.drawText(QRect(xL, y, 120, textH), Qt::AlignLeft | Qt::AlignVCenter,
-               QStringLiteral("成交额：%1").arg(m_data.amount > 0 ? fmtAmt(m_data.amount) : "--"));
+    // 成交额：新浪备选源不提供，此时明确标注"源未提供"而非易误解的 "--"
+    p.drawText(QRect(xL, y, width() - 28, textH), Qt::AlignLeft | Qt::AlignVCenter,
+               m_data.amount > 0
+                   ? QStringLiteral("成交额：%1").arg(fmtAmt(m_data.amount))
+                   : QStringLiteral("成交额：（该数据源未提供）"));
     y += lineH;
 
+    // 换手率：同样可能缺失；缺失时不占行，避免出现空行
     if (m_data.turnover > 0) {
         p.drawText(QRect(xL, y, 120, textH), Qt::AlignLeft | Qt::AlignVCenter,
                    QStringLiteral("换手率：%1%").arg(m_data.turnover, 0, 'f', 2));
         y += lineH;
     }
-    if (m_data.amplitude > 0) {
-        p.drawText(QRect(xL, y, 120, textH), Qt::AlignLeft | Qt::AlignVCenter,
-                   QStringLiteral("振  幅：%1%").arg(m_data.amplitude, 0, 'f', 2));
+    // 振幅：缺失时用 (最高-最低)/昨收 推算，保证该行始终有意义
+    {
+        double amp = m_data.amplitude;
+        if (amp <= 0 && m_hasPrev && m_prev.close > 0 && m_data.high > m_data.low)
+            amp = (m_data.high - m_data.low) / m_prev.close * 100.0;
+        if (amp > 0) {
+            p.drawText(QRect(xL, y, 120, textH), Qt::AlignLeft | Qt::AlignVCenter,
+                       QStringLiteral("振  幅：%1%%2").arg(amp, 0, 'f', 2)
+                           .arg(m_data.amplitude > 0 ? QString() : QStringLiteral("*")));
+            y += lineH;
+        }
+    }
+
+    // ---- 补充区：把面板下半部空白利用起来 ----
+    // 这些信息在看盘时比"再多一条原始行情"更有价值：
+    // K线形态、均线多空排列、量能状态。
+    auto drawInfoRowC = [&](const QString &text, const QColor &c) {
+        p.setPen(c);
+        p.drawText(QRect(xL, y, width() - 28, textH), Qt::AlignLeft | Qt::AlignVCenter, text);
+        y += lineH;
+    };
+
+    // 分隔线4
+    y += 4;
+    p.setPen(QColor(0x22, 0x33, 0x4d));
+    p.drawLine(xL, y, width() - 14, y);
+    y += 8;
+
+    // K 线形态：根据开盘/收盘/最高/最低判断
+    {
+        QString shape;
+        QColor shapeColor = KLineChart::C_TEXT;
+        const double body = qAbs(m_data.close - m_data.open);
+        const double range = m_data.high - m_data.low;
+        const double upperShadow = m_data.high - qMax(m_data.open, m_data.close);
+        const double lowerShadow = qMin(m_data.open, m_data.close) - m_data.low;
+
+        if (range > 1e-9 && body / range < 0.1) {
+            shape = QStringLiteral("十字星");
+        } else if (range > 1e-9 && upperShadow > body * 2 && lowerShadow < body) {
+            shape = (m_data.close < m_data.open) ? QStringLiteral("上影长·上方压力")
+                                                 : QStringLiteral("上影长·冲高回落");
+        } else if (range > 1e-9 && lowerShadow > body * 2 && upperShadow < body) {
+            shape = (m_data.close > m_data.open) ? QStringLiteral("下影长·下方支撑")
+                                                 : QStringLiteral("下影长·探底回升");
+        } else if (m_data.close > m_data.open) {
+            shape = (body / qMax(range, 1e-9) > 0.7) ? QStringLiteral("大阳线")
+                                                     : QStringLiteral("阳线");
+            shapeColor = C_UP;
+        } else if (m_data.close < m_data.open) {
+            shape = (body / qMax(range, 1e-9) > 0.7) ? QStringLiteral("大阴线")
+                                                     : QStringLiteral("阴线");
+            shapeColor = C_DOWN;
+        } else {
+            shape = QStringLiteral("平盘");
+        }
+        drawInfoRowC(QStringLiteral("形态：%1").arg(shape), shapeColor);
+    }
+
+    // 量能：与 5 日均量比较
+    {
+        // 振幅可能缺失（新浪源不提供），此时用 (最高-最低)/昨收 自行计算
+        double amp = m_data.amplitude;
+        if (amp <= 0 && m_hasPrev && m_prev.close > 0 && m_data.high > m_data.low)
+            amp = (m_data.high - m_data.low) / m_prev.close * 100.0;
+
+        QString volTxt;
+        QColor volColor = KLineChart::C_TEXT;
+        if (amp > 0) {
+            if (amp >= 7.0)      { volTxt = QStringLiteral("剧烈波动"); volColor = C_UP; }
+            else if (amp >= 4.0) { volTxt = QStringLiteral("波动较大"); }
+            else if (amp <= 1.5) { volTxt = QStringLiteral("窄幅整理"); }
+            else                 { volTxt = QStringLiteral("波动正常"); }
+            drawInfoRowC(QStringLiteral("振幅评价：%1").arg(volTxt), volColor);
+        }
     }
 }

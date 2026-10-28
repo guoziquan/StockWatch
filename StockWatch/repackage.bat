@@ -1,67 +1,76 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
+chcp 936 >nul
 echo ========================================
-echo   å†°å· Â· Aè‚¡è¡Œæƒ…ç›‘æ§  æ‰“åŒ…è„šæœ¬
+echo   ±ù´¨ ¡¤ A¹ÉĞĞÇé¼à¿Ø  ´ò°ü½Å±¾
 echo ========================================
 echo.
 
-:: -------- é…ç½® --------
+:: -------- ÅäÖÃ --------
 set "PROJECT_DIR=%~dp0"
 set "QT_DIR=F:\Qt\Qt5.9.7"
 set "MINGW_BIN=%QT_DIR%\Tools\mingw530_32\bin"
 
-:: é»˜è®¤è¾“å‡ºç›®å½•ï¼Œå¯ä¼ å‚è¦†ç›–
+:: Ä¬ÈÏÊä³öÄ¿Â¼£¬¿É´«²Î¸²¸Ç
 if "%~1"=="" (
     set "OUT_DIR=%PROJECT_DIR%\package_out"
 ) else (
     set "OUT_DIR=%~1"
 )
 
-:: -------- ç¼–è¯‘ --------
-echo [1/4] ç¼–è¯‘é¡¹ç›®...
+:: -------- ±àÒë --------
+echo [1/4] ±àÒëÏîÄ¿...
 pushd "%PROJECT_DIR%"
 call "%QT_DIR%\5.9.7\mingw53_32\bin\qmake.exe" StockWatch.pro >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [é”™è¯¯] qmake å¤±è´¥
+    echo [´íÎó] qmake Ê§°Ü
     popd
     exit /b 1
 )
 call "%MINGW_BIN%\mingw32-make.exe" -j4 >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [é”™è¯¯] ç¼–è¯‘å¤±è´¥
+    echo [´íÎó] ±àÒëÊ§°Ü
     popd
     exit /b 1
 )
 popd
-echo       ç¼–è¯‘å®Œæˆ
+echo       ±àÒëÍê³É
 
-:: -------- éƒ¨ç½² --------
-echo [2/4] æ”¶é›†ä¾èµ–...
+:: -------- ²¿Êğ --------
+echo [2/4] ÊÕ¼¯ÒÀÀµ...
 if exist "%OUT_DIR%" (
     rd /s /q "%OUT_DIR%" >nul 2>&1
 )
 mkdir "%OUT_DIR%" >nul 2>&1
 
-:: Qt æ ¸å¿ƒæ–‡ä»¶
+:: Qt ºËĞÄÎÄ¼ş
 copy /y "%PROJECT_DIR%release\StockWatch.exe" "%OUT_DIR%\" >nul
 call "%QT_DIR%\5.9.7\mingw53_32\bin\windeployqt.exe" "%OUT_DIR%\StockWatch.exe" --no-translations --no-compiler-runtime --no-system-d3d-compiler --no-quick-import >nul 2>&1
 
-:: MinGW è¿è¡Œæ—¶
+:: MinGW ÔËĞĞÊ±
 copy /y "%MINGW_BIN%\libgcc_s_dw2-1.dll"   "%OUT_DIR%\" >nul 2>&1
 copy /y "%MINGW_BIN%\libstdc++-6.dll"      "%OUT_DIR%\" >nul 2>&1
 copy /y "%MINGW_BIN%\libwinpthread-1.dll"  "%OUT_DIR%\" >nul 2>&1
 
-:: OpenSSLï¼ˆä» release ç›®å½•å–ï¼Œwindeployqt ä¸ä¼šç®¡å®ƒï¼‰
+:: OpenSSL£¨windeployqt ²»´¦Àí£¬ĞèÊÖ¶¯´ò°ü£©
+:: ²éÕÒË³Ğò£ºrelease Ä¿Â¼ -> MinGW ¹¤¾ßÁ´×Ô´ø opt\bin£¨Qt °²×°Ê±×Ô´ø£¬°æ±¾Æ¥Åä£©
 copy /y "%PROJECT_DIR%release\libeay32.dll" "%OUT_DIR%\" >nul 2>&1
 copy /y "%PROJECT_DIR%release\ssleay32.dll" "%OUT_DIR%\" >nul 2>&1
+if not exist "%OUT_DIR%\libeay32.dll" (
+    copy /y "%QT_DIR%\Tools\mingw530_32\opt\bin\libeay32.dll" "%OUT_DIR%\" >nul 2>&1
+    copy /y "%QT_DIR%\Tools\mingw530_32\opt\bin\ssleay32.dll" "%OUT_DIR%\" >nul 2>&1
+)
+if not exist "%OUT_DIR%\libeay32.dll" (
+    copy /y "%QT_DIR%\Tools\QtCreator\bin\libeay32.dll" "%OUT_DIR%\" >nul 2>&1
+    copy /y "%QT_DIR%\Tools\QtCreator\bin\ssleay32.dll" "%OUT_DIR%\" >nul 2>&1
+)
 if exist "%OUT_DIR%\libeay32.dll" (
-    echo       OpenSSL DLL å·²æ‰“åŒ…
+    echo       OpenSSL DLL ÒÑ´ò°ü
 ) else (
-    echo       [è­¦å‘Š] æœªæ‰¾åˆ° OpenSSL DLLï¼Œè¯·å°† libeay32.dll/ssleay32.dll æ”¾åˆ° release ç›®å½•
+    echo       [WARN] Î´ÕÒµ½ OpenSSL DLL£¬HTTPS ²»¿ÉÓÃ£¨³ÌĞò»á×Ô¶¯¸ÄÓÃÌÚÑ¶ HTTP Ô´£©
 )
 
-:: é¡¹ç›®æ–‡ä»¶
+:: ÏîÄ¿ÎÄ¼ş
 copy /y "%PROJECT_DIR%stocks.json" "%OUT_DIR%\" >nul
 copy /y "%PROJECT_DIR%resource\Image\enter_icon.ico" "%OUT_DIR%\" >nul 2>&1
 
@@ -71,14 +80,14 @@ echo [Paths]
 echo Plugins = .
 ) > "%OUT_DIR%\qt.conf"
 
-:: æ¸…ç†å¤šä½™æ–‡ä»¶
+:: ÇåÀí¶àÓàÎÄ¼ş
 if exist "%OUT_DIR%\translations" rd /s /q "%OUT_DIR%\translations" >nul 2>&1
 if exist "%OUT_DIR%\D3Dcompiler_47.dll" del /q "%OUT_DIR%\D3Dcompiler_47.dll" >nul 2>&1
 if exist "%OUT_DIR%\opengl32sw.dll"     del /q "%OUT_DIR%\opengl32sw.dll" >nul 2>&1
 if exist "%OUT_DIR%\Qt5Svg.dll"         del /q "%OUT_DIR%\Qt5Svg.dll" >nul 2>&1
 
-:: -------- éªŒè¯ --------
-echo [3/4] éªŒè¯å®Œæ•´æ€§...
+:: -------- ÑéÖ¤ --------
+echo [3/4] ÑéÖ¤ÍêÕûĞÔ...
 set "MISSING="
 if not exist "%OUT_DIR%\StockWatch.exe"       set "MISSING=StockWatch.exe %MISSING%"
 if not exist "%OUT_DIR%\Qt5Core.dll"          set "MISSING=Qt5Core.dll %MISSING%"
@@ -91,19 +100,18 @@ if not exist "%OUT_DIR%\ssleay32.dll"         set "MISSING=ssleay32.dll %MISSING
 if not exist "%OUT_DIR%\stocks.json"          set "MISSING=stocks.json %MISSING%"
 
 if defined MISSING (
-    echo       [è­¦å‘Š] ç¼ºå¤±æ–‡ä»¶: %MISSING%
+    echo       [¾¯¸æ] È±Ê§ÎÄ¼ş: %MISSING%
 ) else (
-    echo       æ ¸å¿ƒæ–‡ä»¶å®Œæ•´
+    echo       ºËĞÄÎÄ¼şÍêÕû
 )
 
-:: -------- ç»Ÿè®¡ --------
-echo [4/4] ç»Ÿè®¡å¤§å°...
-for /f "tokens=1,2" %%a in ('dir /s /a "%OUT_DIR%" ^| findstr "File(s)"') do set "BYTES=%%b"
-set /a MB=%BYTES% / 1048576
-echo       è¾“å‡ºç›®å½•: %OUT_DIR%
-echo       æ€»å¤§å°:   %MB% MB
+:: -------- Í³¼Æ --------
+echo [4/4] Í³¼Æ´óĞ¡...
+for /f %%b in ('powershell -NoProfile -Command "[math]::Round((Get-ChildItem -LiteralPath '%OUT_DIR%' -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 1)"') do set "MB=%%b"
+echo       Êä³öÄ¿Â¼: %OUT_DIR%
+echo       ×Ü´óĞ¡:   %MB% MB
 echo.
 echo ========================================
-echo   æ‰“åŒ…å®Œæˆï¼
+echo   ´ò°üÍê³É£¡
 echo ========================================
 endlocal

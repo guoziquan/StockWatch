@@ -1,4 +1,4 @@
-# 冰川 · A股行情监控 — 完整技术文档 v2.0
+# 冰川 · A股行情监控 — 完整技术文档 v4.0
 
 ## 1. 项目概览
 
@@ -11,26 +11,75 @@
 | Qt 模块 | core, gui, network, concurrent, widgets |
 | UI 方式 | 100% C++ 代码构建，无 .ui 文件 |
 | 图表引擎 | QPainter 自绘（无 Qt Charts / QCustomPlot 依赖） |
-| 数据源 | 东方财富公开 HTTPS/JSON API |
+| 数据源 | 见下方「数据源一览」 |
 | 持久化 | QSettings IniFormat → `config.ini` |
 | 默认自选 | `stocks.json` 兜底 + 硬编码备选 |
 
-### 文件清单（11 个源码文件）
+### 数据源一览（v4.0）
+
+| 用途 | 主源 | 备选 | 备注 |
+|------|------|------|------|
+| 自选行情 | 东财 `push2` ulist.np | 腾讯 `qt.gtimg.cn`（HTTP） | 东财失败自动切腾讯 |
+| K 线 | 东财 `push2his` kline | 新浪 `money.finance.sina.com.cn` | 新浪不含成交额/换手率 |
+| **分时图** | **腾讯 `web.ifzq.gtimg.cn`** | — | 东财 trends2 不稳，腾讯更可靠 |
+| 主力资金流 | 东财 `push2his` fflow | — | 仅日/周/月线可用 |
+| 公告 | 东财 `np-anotice-stock` | — | 风险扫描用 |
+| 财务数据 | 东财 `datacenter-web` | — | 现金流/利润表 |
+| **所属板块** | **东财 `push2` slist** | — | 含板块代码+实时涨幅 |
+
+> ⚠️ 实践发现：东财 `push2` 域名下部分 API 路径在个别网络环境会被重置
+> （`ulist.np`/`slist` 通常可用，`kline`/`clist` 可能失败）。
+> 因此分时改用腾讯、K 线保留新浪备选。
+
+### 文件清单（29 个源码文件 + 8 个测试）
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `StockWatch.pro` | 9 | qmake 工程文件 |
-| `main.cpp` | 14 | 应用入口 |
-| `mainwindow.h` | 108 | MainWindow 声明 + HoldingRecord/HoldingWidgets 结构体 |
-| `mainwindow.cpp` | 1053 | 主窗口全功能实现 |
-| `klinechart.h` | 191 | KLineData/KLineInfoPanel/KLineChart 声明 |
-| `klinechart.cpp` | 1190 | 自绘K线图完整渲染引擎 |
-| `stockchartwindow.h` | 44 | StockChartWindow 声明 |
-| `stockchartwindow.cpp` | 264 | K线详情窗口 |
-| `indicator.h` | 97 | IndicatorEngine 声明 |
-| `indicator.cpp` | 487 | 技术指标计算引擎 |
-| `reportgenerator.h` | 84 | ReportGenerator 声明 |
-| `reportgenerator.cpp` | 524 | 每日文字报告生成器 |
+| `StockWatch.pro` | 13 | qmake 工程文件 |
+| `main.cpp` | 20 | 应用入口（单实例检测 + 托盘初始化） |
+| `mainwindow.h` | 128 | MainWindow 声明 + HoldingWidgets 结构体 |
+| `mainwindow.cpp` | 1555 | 主窗口全功能实现（表格/预警/持仓/托盘/板块入口） |
+| `klinechart.h` | 181 | KLineData/FlowPoint/KLineChart 声明 |
+| `klinechart.cpp` | 1507 | 自绘K线图渲染引擎（含资金流副图、量能均线、十字光标浮标） |
+| `stockchartwindow.h` | 54 | StockChartWindow 声明 |
+| `stockchartwindow.cpp` | 571 | K线窗口（K线/分时切换、三源容错、窗口几何记忆） |
+| `indicator.h` | 85 | IndicatorEngine 声明 |
+| `indicator.cpp` | 413 | 技术指标计算引擎 |
+| `reportgenerator.h` | 83 | ReportGenerator 声明 |
+| `reportgenerator.cpp` | 494 | 每日文字报告生成器 |
+| `riskscanner.h` | 93 | RiskScanner 声明（财务造假/监管风险扫描） |
+| `riskscanner.cpp` | 593 | 公告关键词匹配 + 审计意见 + 盈利质量红旗 |
+| `autoclosemsg.h` | 29 | AutoCloseMessageBox 声明 |
+| `autoclosemsg.cpp` | 48 | 自动关闭 QMessageBox（倒计时关闭） |
+| `holdingcalc.h` | 84 | 持仓账本计算（移动加权平均 + 费用模型） |
+| `holdingcalc.cpp` | 138 | 已实现/浮动盈亏分离 |
+| `tradingcalendar.h` | 52 | A股交易日历（含法定节假日） |
+| `tradingcalendar.cpp` | 199 | 2025-2027 休市安排 |
+| `pricelimit.h` | 76 | **A股涨跌停规则引擎** 声明 |
+| `pricelimit.cpp` | 152 | 板块×风险状态 → 涨跌幅限制、涨停/跌停价 |
+| `timesharedata.h` | 60 | **分时数据模型**（240格横轴映射） |
+| `timesharedata.cpp` | 155 | 东财/腾讯两种分时格式解析 |
+| `timesharechart.h` | 79 | **分时图控件** 声明 |
+| `timesharechart.cpp` | 446 | 分时图自绘（价格线/均价线/量柱/整数百分比轴） |
+| `sectordata.h` | 82 | **板块联动模型**（相对强度） |
+| `sectordata.cpp` | 170 | 板块分类、主板块选择、强度判定 |
+| `sectordialog.h` | 36 | **板块分析窗口** 声明 |
+| `sectordialog.cpp` | 174 | 板块列表 + 相对强度结论展示 |
+
+测试程序（不参与主工程构建）：
+
+| 文件 | 验证内容 | 用例数 |
+|------|---------|--------|
+| `test_holdingcalc.cpp` | 移动加权平均、费用模型、盈亏分离 | 43 |
+| `test_tradingcalendar.cpp` | 节假日、交易日推算、盘中阶段 | 36 |
+| `test_pricelimit.cpp` | 板块识别、涨跌停价、浮点舍入 | 44 |
+| `test_timesharedata.cpp` | 槽位映射、双格式解析、累计量转换 | 54 |
+| `test_sectordata.cpp` | 板块分类、主板块选择、相对强度 | 44 |
+| `test_riskscanner.cpp` | 审计意见、扣非占比、误报防护 | 51 |
+| `test_grab.cpp` | 分时图离屏渲染（视觉验证工具） | — |
+| `test_sector_ui.cpp` | 板块窗口离屏渲染（视觉验证工具） | — |
+
+> 合计 **272 项**单元测试。编译运行方式见第 19 节。
 
 ---
 
@@ -38,6 +87,8 @@
 
 ```
 main.cpp → QApplication
+  ├─ 单实例检测: QSharedMemory("StockWatch_SingleInstance_Key")
+  ├─ setQuitOnLastWindowClosed(false): 关窗不退出（托盘常驻）
   └─ MainWindow (QMainWindow)
        ├─ 四个定时器:
        │    ├─ m_timer (5-120s): 定时拉取行情
@@ -45,6 +96,7 @@ main.cpp → QApplication
        │    ├─ m_reportTimer (60s): 午夜检测
        │    └─ QTimer::singleShot via connect: 网络回调
        ├─ QTableWidget (11列): 自选股行情一览
+       ├─ 系统托盘 QSystemTrayIcon + 托盘菜单（显示主窗口 / 退出）
        ├─ StockChartWindow (QWidget + Qt::Window)
        │    ├─ KLineChart: QPainter 自绘
        │    │    ├─ 主图: K线蜡烛 + MA5/10/20/60 或 BOLL(20,2)
@@ -55,6 +107,24 @@ main.cpp → QApplication
        │    └─ KLineInfoPanel (190px): 行情数据面板
        ├─ ReportGenerator: QtConcurrent 多线程报告
        └─ IndicatorEngine: 静态纯计算
+```
+
+### 数据源容错链
+
+**主窗口行情**（`fetchQuotes` → 失败 → `fetchTencentQuotes` → 再失败 → 重试退避）:
+
+```
+东方财富 (HTTPS/JSON, ulist.np/get)
+  └─ 失败/SSL错误/超时
+       └─ 腾讯 (HTTP, qt.gtimg.cn, 免 SSL 绕过 DNS 劫持)
+            └─ 也失败 → 回退东方财富重试 (3s/8s/20s 退避, 最多3次)
+```
+
+**K线窗口**（`fetchKLine` → 失败 → `fetchSinaKLine`）:
+
+```
+东方财富 (push2his.kline/get)
+  └─ 失败/空数据 → 新浪 (CN_MarketData.getKLineData, JSON)
 ```
 
 ---
@@ -164,15 +234,22 @@ main.cpp → QApplication
 
 **指数显示**: QLabel RichText 格式，标签名 `#8fa3c0` + 数值 `#e8eefc` + 涨跌幅动态颜色
 
-**交易状态**: `updateMarketStatus()` 根据当前时间判断：
+**交易状态**: 由 `TradingCalendar::describe()` 判断（见第 13 节）：
 
 | 条件 | 显示文字 |
 |------|---------|
-| 周末 | 休市(周末) · X天后周一 9:30 开盘 |
-| 9:15-9:30 | 集合竞价 · 9:30 开盘 |
-| 9:30-11:30 / 13:00-15:00 | 🟢 交易中 · H:MM后收盘 |
-| 11:30-13:00 | ☕ 午间休市 · H:MM后开盘 |
-| 15:00后 | 🔴 已收盘 · X天后 9:30 开盘 |
+| 周末 | 休市(周末) · N 天后 M月d日 9:30 开盘 |
+| 法定节假日 | 休市(春节/国庆/…) · N 天后 M月d日 9:30 开盘 |
+| 9:15 前 | 未开盘 · 今日 9:15 集合竞价 |
+| 9:15-9:25 | 集合竞价中 · 9:25 结束 |
+| 9:25-9:30 | 集合竞价结束 · H:MM 后开盘 |
+| 9:30-11:30 | 🟢 交易中 · H:MM 后午休 |
+| 11:30-13:00 | ☕ 午间休市 · H:MM 后开盘 |
+| 13:00-15:00 | 🟢 交易中 · H:MM 后收盘 |
+| 15:00 后 | 🔴 已收盘 · 明日 M月d日 9:30 开盘 |
+
+**休市日刷新策略**：非交易日当日只补刷一次（确认数据日期），之后不再轮询，
+避免在休市日制造"行情正在跳动"的错觉。盘前/午休/盘后每 5 个周期才请求一次。
 
 ### 4.4 区域② — 操作工具栏
 
@@ -286,14 +363,50 @@ refresh() → fetchQuotes()
 
 **secId() 规则**: 6开头 → `1.XXXXXX` (上证), 其余 → `0.XXXXXX` (深证/创业板)
 
+**腾讯源备选**（`fetchTencentQuotes` → `parseTencentReply`，东财失败后启用）:
+
+- 接口: `http://qt.gtimg.cn/q=sz002555,sh000001,...`（HTTP，免 SSL）
+- 代码前缀: 6开头 → `sh`，其余 → `sz`；指数 `000001` → `sh000001`，其余 → `sz`+代码
+- 返回格式: `v_sz002555="51~名称~代码~最新价~昨收~今开~..."`
+- 字段索引: `[1]名称 [2]代码 [3]最新价 [4]昨收 [5]今开 [31]涨跌额 [32]涨跌幅% [33]最高 [34]最低`
+- 非交易时段兜底: 最新价 ≤0 时回退为昨收，涨跌归零
+
+**重试退避**（`m_retryCount`）: 东方财富失败 → 1秒后切腾讯；腾讯也失败 → 3s/8s/20s 退避回东财，最多 3 次；成功后 `m_retryCount = 0`
+
 ### 4.9 价格预警
 
 **设置**: 右键 → `setAlert()` → `QInputDialog` 两次（上破价/下破价，0=关闭）
 
 **检查**: `checkAlerts()` 在每次行情刷新后运行，遍历 `m_alerts`，当 `price >= up` 或 `price <= down` 时：
 - `QApplication::beep()` 响铃
-- `QMessageBox::warning` 弹窗
+- `AutoCloseMessageBox::warn(...)` 弹窗（5 秒自动关闭）
 - 5分钟内同一方向不重复触发（`m_triggered` map 记录最后触发时间戳）
+
+### 4.11 系统托盘与单实例
+
+**单实例检测**（[main.cpp](main.cpp)）:
+
+- 用 `QSharedMemory("StockWatch_SingleInstance_Key")` 检测，已运行则弹提示并退出
+- `QApplication::setQuitOnLastWindowClosed(false)`：关闭主窗口不退出进程（托盘常驻）
+
+**关闭行为**（`closeEvent`）: 点击窗口关闭按钮 → `hide()` + `ev->ignore()`（最小化到托盘，不退出）
+
+**托盘图标**（`QSystemTrayIcon`）:
+
+- 图标: `enter_icon.ico`（缺失时回退 `SP_ComputerIcon`）
+- 右键菜单: 「显示主窗口」「退出」
+- 双击托盘图标: 主窗口可见则隐藏，隐藏则显示并置顶
+
+**托盘菜单样式**: 背景 `#131f33`、文字 `#e8eefc`、边框 `#22334d`、选中 `#2a5fd6`
+
+### 4.12 自动关闭弹窗（AutoCloseMessageBox）
+
+`QMessageBox` 子类，标题带倒计时（如「行情获取失败 — SSL错误 (5s)」）:
+
+- `timeoutSeconds > 0`: `open()` 窗口级模态，1 秒递减，归零自动关闭
+- `timeoutSeconds == 0`: `exec()` 同步阻塞，行为同普通 QMessageBox
+- 静态方法 `info()`/`warn()` 默认 5 秒自动关闭
+- 全项目统一用它替代裸 `QMessageBox`，避免阻塞事件循环（用于 SSL 错误、网络错误、超时、预警触发、买入/卖出/添加自选提示等）
 
 ### 4.10 配置持久化
 
@@ -338,16 +451,51 @@ struct HoldingRecord {
 QMap<QString, QVector<HoldingRecord>> m_holdings;
 ```
 
-### 5.2 盈亏计算
+### 5.2 盈亏计算（移动加权平均法）
 
+> **重要变更（v3.0）**：旧版采用 `盈亏 = 当前市值 - 总买入成本 + 总卖出收入`，
+> 该公式不做成本结转，导致"均价"显示的是历次买入的算术均价而非剩余持仓的
+> 真实成本，减仓/T 之后无法回答"我现在成本价多少"。现已改为券商标准算法，
+> 实现见 [`holdingcalc.h`](holdingcalc.h) / [`holdingcalc.cpp`](holdingcalc.cpp)。
+
+**买入**（成本基础累加，含买入费用）：
 ```
-净持仓    = Σ(买入股数) - Σ(卖出股数)
-总买入成本 = Σ(买入股数 × 买入价)
-总卖出收入 = Σ(卖出股数 × 卖出价)
-当前市值  = 净持仓 × 当前最新价
-盈亏      = 当前市值 - 总买入成本 + 总卖出收入
-均价      = 总买入成本 ÷ 总买入股数
+成本基础 += 买入股数 × 买入价 + 买入费用
+净持仓   += 买入股数
+持仓成本价 = 成本基础 ÷ 净持仓
 ```
+
+**卖出**（按卖出前成本价结转，成本价恒定）：
+```
+单位成本   = 成本基础 ÷ 卖出前净持仓
+实现盈亏  += 卖出股数 × 卖出价 - 卖出股数 × 单位成本 - 卖出费用
+成本基础  -= 卖出股数 × 单位成本
+净持仓    -= 卖出股数
+```
+
+**汇总指标**：
+
+| 指标 | 公式 |
+|------|------|
+| 持仓成本价 | 成本基础 ÷ 净持仓（含买入费用，卖出后保持不变） |
+| 已实现盈亏 | Σ 卖出(收入 − 结转成本 − 卖出费用) |
+| 浮动盈亏 | (现价 − 成本价) × 净持仓 |
+| 累计盈亏 | 已实现 + 浮动 |
+| 当前市值 | 净持仓 × 现价 |
+
+**交易费用模型**（`FeeConfig`，默认值符合 A 股现行规则）：
+
+| 项目 | 费率 | 方向 | 备注 |
+|------|------|------|------|
+| 佣金 | 万 2.5 | 买卖双向 | **最低 5 元** |
+| 印花税 | 0.05% | **仅卖出** | 2023-08-28 起单边征收 |
+| 过户费 | 0.001% | 买卖双向 | 沪深均收 |
+
+**边界处理**：
+- 记录按日期升序规整，同日**买入优先于卖出**（保证先建仓后减仓）
+- 卖出股数超过净持仓时按净持仓截断，费用按比例折算，净持仓不会为负
+- 股数 ≤0 或价格 ≤0 的非法记录被过滤
+- 清仓后成本基础归零，浮动盈亏归零，累计盈亏 = 已实现盈亏
 
 ### 5.3 交互入口
 
@@ -407,7 +555,7 @@ sellStock(code, name)
 │ 交易记录表格 (QTableWidget, 5列)              │
 │ 日期 │操作│股数│价格│金额                      │
 │ 25-07-26│买入│500│19.20│+9,600.00             │
-│ 蓝色"买入"=买入 / 红色"买入"=卖出 (实际已修复) │
+│ 绿色"买入"=买入 / 红色"卖出"=卖出              │
 ├──────────────────────────────────────────────┤
 │ [＋ 买入]  [- 卖出]                [删除]     │
 │  蓝色      深色                   红色文字    │
@@ -487,10 +635,24 @@ GET push2his.eastmoney.com/api/qt/stock/kline/get
   secid=0.002555  (6开头→1., 其余→0.)
   klt=101          (5=5分钟, 60=60分钟, 101=日K, 102=周K, 103=月K)
   fqt=1            (前复权)
-  lmt=500          (日K取500条)
+  lmt=500          (日K取500条, 分钟线取300条)
   fields2=f51~f61  (日期/开/收/高/低/量/额/振幅/涨跌幅/换手率)
   end=20500101
 ```
+
+**新浪源备选**（`fetchSinaKLine` → `onSinaReplyFinished`，东财失败/空数据后启用）:
+
+```
+GET money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData
+  symbol=sz002555  (6开头→sh, 其余→sz)
+  scale=240        (日K; 周K=1200, 月K=7200, 分钟线新浪不支持)
+  datalen=500      (周K取250, 月K取120)
+```
+
+- 返回 JSON 数组: `[{"day":"...","open":"...","close":"...","high":"...","low":"...","volume":"..."}]`
+- `volume` 是股数，>100000 时除以 100 转手；无成交额/振幅/换手率字段（置 0）
+- 涨跌幅由相邻收盘价自行计算（`chgPct` 循环回填）
+- 新浪不支持前复权，周K/月K 无直接支持，仅用 scale 映射近似
 
 ---
 
@@ -680,13 +842,19 @@ start = ⌊lo/step⌋ × step
 
 | 功能 | 触发方式 | 实现位置 |
 |------|---------|---------|
+| 单实例检测 | 启动时 | main.cpp → QSharedMemory |
+| 关闭到托盘 | 点击关闭按钮 | closeEvent() → hide() |
+| 托盘菜单 | 托盘右键 / 双击托盘 | QSystemTrayIcon |
 | 添加自选 | 代码框回车 / 添加按钮 | addStock() |
 | 删除自选 | 右键 → 删除 | removeStock() |
 | 定时刷新行情 | 自动(可调5~120s) | m_timer → refresh → fetchQuotes |
 | 手动刷新 | 刷新按钮 | refresh → fetchQuotes |
+| 腾讯源行情备选 | 东方财富失败自动 | fetchTencentQuotes() / parseTencentReply() |
+| 重试退避 | 双源都失败 | m_retryCount (3s/8s/20s, 最多3次) |
 | 查看K线 | 双击表格行 / 代码/名称列 | onTableDoubleClicked → StockChartWindow |
+| 新浪源K线备选 | 东方财富K线失败自动 | fetchSinaKLine() / onSinaReplyFinished() |
 | 设置价格预警 | 右键 → 设置价格预警 | setAlert() |
-| 预警触发 | 行情刷新后自动检测 | checkAlerts() → QMessageBox + beep |
+| 预警触发 | 行情刷新后自动检测 | checkAlerts() → AutoCloseMessageBox + beep |
 | 买入记录 | 右键 / 按钮 / 明细窗口 | buyStock() |
 | 卖出记录 | 明细窗口按钮 | sellStock() |
 | 持仓明细 | 表格"持仓数据"按钮 | openHoldingDetail() |
@@ -699,9 +867,16 @@ start = ⌊lo/step⌋ × step
 | K线平移 | 拖拽 | mousePressEvent + mouseMoveEvent |
 | K线十字光标 | 鼠标移动 | mouseMoveEvent → hoveredChanged |
 | 主副图比例调节 | 拖拽手柄 | m_splitDragging |
-| 周期切换(日/周/月K) | K线窗口下拉 | onPeriodChanged |
+| 周期切换(分时/60分钟/日/周/月K) | K线窗口下拉 | onPeriodChanged |
+| **真正的分时图** | **周期选「分时」** | **TimeShareChart（240格固定横轴）** |
+| 分时十字光标 | 鼠标移动 | TimeShareChart::drawCrosshair |
 | 主图指标切换(MA/BOLL/无) | K线窗口下拉 | onMainIndicatorChanged |
-| 副图指标切换(成交量/MACD/KDJ) | K线窗口下拉 | onSubIndicatorChanged |
+| 副图指标切换(成交量/MACD/KDJ/主力资金) | K线窗口下拉 | onSubIndicatorChanged |
+| 成交量均线(MA5/10/20)+量比 | 成交量副图 | KLineChart::drawVolumeBars |
+| K线窗口几何记忆 | 关闭时自动保存 | closeEvent → config.ini[chartWindow] |
+| **涨停价/跌停价显示** | **主表第9/10列** | **PriceLimitCalc::compute** |
+| **封板高亮** | **价格触及涨跌停** | 实心色块 |
+| **板块联动分析** | **右键 → 🧩 板块联动** | openSectorAnalysis → SectorDialog |
 | 表格手型光标 | 悬停代码/名称列 | eventFilter |
 | 刷新倒计时 | 1秒自动 | m_countdownTimer |
 
@@ -724,3 +899,446 @@ start = ⌊lo/step⌋ × step
 | 顶部标题 | 系统默认 | 17px bold |
 | 指数标签 | 系统默认 | 12px |
 | 按钮 | 系统默认 | 13px / 12px / 11px |
+
+---
+
+## 12. 交易日历模块 (TradingCalendar) — v3.0 新增
+
+### 12.1 解决的问题
+
+原实现仅用 `dayOfWeek() >= 6` 判断休市，**完全忽略法定节假日**。后果：
+
+> 春节/国庆长假期间，程序仍显示"🟢 交易中"并持续轮询，
+> 用户看到"更新于 HH:MM:SS"正常跳动，误以为拿到实时行情，
+> 实际是上一交易日收盘价。**这是误导性最强的缺陷。**
+
+### 12.2 接口
+
+```cpp
+namespace TradingCalendar {
+    bool isTradingDay(const QDate &d);            // 交易日（排除周末+节假日）
+    bool isHoliday(const QDate &d);               // 休市（周末或节假日）
+    QString holidayName(const QDate &d);          // "春节"/"国庆"…，无则空
+    QDate nextTradingDay(const QDate &d);         // 下一交易日
+    QDate prevTradingDay(const QDate &d);         // 上一交易日
+    SessionPhase phaseAt(const QDateTime &t);     // 盘中阶段
+    QString describe(const QDateTime &t);         // 中文状态描述
+    bool coversYear(int year);                    // 日历数据是否覆盖
+}
+```
+
+### 12.3 盘中阶段 (`SessionPhase`)
+
+| 阶段 | 时间 |
+|------|------|
+| `PreOpen` | < 9:15 |
+| `CallAuction` | 9:15 – 9:25 |
+| `CallAuctionEnd` | 9:25 – 9:30 |
+| `MorningTrading` | 9:30 – 11:30 |
+| `LunchBreak` | 11:30 – 13:00 |
+| `AfternoonTrading` | 13:00 – 15:00 |
+| `AfterClose` | ≥ 15:00 |
+| `Closed` | 非交易日任意时刻 |
+
+### 12.4 数据覆盖与维护
+
+- 当前覆盖 **2025 / 2026 / 2027** 三年休市安排
+- 未覆盖年份**退化为"仅排除周末"**（宁可少报节假日，也不要把真实交易日
+  误判为休市，后者会阻止正常刷新），并在顶部状态栏追加"（节假日库未更新）"
+- **维护方式**：每年 12 月中下旬交易所发布次年休市安排后，在
+  [`tradingcalendar.cpp`](tradingcalendar.cpp) 的 `g_ranges[]` 中追加即可，
+  同时更新 `g_lastYear`
+
+---
+
+## 13. 主力资金流副图 — v3.0 新增
+
+### 13.1 数据源
+
+复用已有的东方财富资金流接口（`reportgenerator.cpp` 早已在用，此前仅用于报告）：
+
+```
+GET push2his.eastmoney.com/api/qt/stock/fflow/daykline/get
+  secid=0.002555   klt=101   lmt=0
+  fields2=f51~f65
+```
+
+- 返回 `data.klines[]`，逗号分隔：`[0]日期 [1]主力净流入 [2]小单 [3]中单
+  [4]大单 [5]超大单 [6]主力净占比 …`
+- 主力净流入 = 超大单 + 大单
+
+### 13.2 交互入口
+
+K 线窗口副图下拉框新增**「主力资金」**选项（第 4 项）：
+
+| 索引 | 副图 |
+|------|------|
+| 0 | 成交量 |
+| 1 | MACD |
+| 2 | KDJ |
+| **3** | **主力资金** |
+
+### 13.3 渲染要点
+
+- 副图下拉选中`主力资金`时，`KLineChart::drawMoneyFlow()` 绘制红绿柱
+- **红** = 主力净流入，**绿** = 主力净流出，零轴虚线
+- 左上角图例显示**可见区间主力净流入合计**（亿/万单位）与统计天数
+- Y 轴单独用 `drawFlowAxisContent()`（万/亿中文单位），不与 MACD/KDJ 混用
+- **分钟线周期（分时/60分钟）不请求资金流**，副图提示"暂无数据"
+- 通过 `setMoneyFlow(QVector<FlowPoint>)` 按日期对齐到 K 线：
+  建立 `日期 → 索引` 哈希表，缺失日期按 0 处理；若完全无法匹配则清空（不显示误导性空图）
+- 资金流与 K 线**并行请求**，谁先返回由另一方触发对齐渲染
+
+---
+
+## 14. 风险扫描器（v3.1 强化）
+
+### 14.1 三类判定
+
+| 类别 | 方法 | 触发条件 |
+|------|------|---------|
+| 公告关键词 | `matchAnnouncementKeywords` | 高危词（立案调查/行政处罚/虚假记载/退市…）或关注词（问询函/违规担保/资金占用…） |
+| 审计意见 | `checkAuditOpinion` | 保留 / 否定 / 无法表示 / 带强调事项段 |
+| 盈利质量 | `checkEarningsQuality` | 扣非占比过低、现金流覆盖不足 |
+| 现金流红旗 | `checkCashFlowRedFlags` | 连续3期为负、最新期大额流出、营收背离 |
+
+### 14.2 审计意见分类（`classifyAuditOpinion`）
+
+严重程度：`Disclaimer` > `Adverse` > `Qualified` > `Emphasis` > `Standard` > `Unknown`
+
+> **关键陷阱（已修复）**：「标准无保留意见」**包含子串**「保留意见」。
+> 若按严重程度顺序直接判定，会把最健康的审计意见误判为最严重的问题。
+> 因此必须**先排除「无保留意见」**，再按严重程度判定。
+
+### 14.3 盈利质量判定
+
+```
+扣非净利润占比 = 扣非净利润 / 净利润
+  < 0    → 红旗：利润依赖非经常性损益（仅在净利润>0 时判断）
+  < 50%  → 红旗：主业盈利能力弱
+
+现金流覆盖 = Σ经营现金流 / Σ净利润（最近3期，跳过亏损期）
+  < 0    → 红旗：利润未转化为现金
+  < 50%  → 红旗：盈利质量存疑
+```
+
+**设计要点**：亏损期不参与覆盖计算（占比无意义），净利润为 0 时不判扣非占比，
+避免对亏损公司误报。
+
+### 14.4 数据可得性（重要限制）
+
+经真实接口核实：
+
+| 数据 | 可得性 |
+|------|--------|
+| 净利润 `PARENT_NETPROFIT` | ✅ 利润表接口提供 |
+| 扣非净利润 `DEDUCT_PARENT_NETPROFIT` | ✅ 利润表接口提供 |
+| 经营现金流 `NETCASH_OPERATE` | ✅ 现金流接口提供 |
+| **审计意见类型** | ❌ **免费接口不提供** |
+
+审计意见的处理策略：
+
+- 探明东财不存在 `RPT_AUDIT_OPINION` 类报表；公告标题通常只写
+  「20XX年度审计报告」，**不含意见类型**，需下载 PDF 解析才能获知
+- 因此 `extractAuditOpinion()` **只采纳标题中明确写出意见类型**的公告，
+  并严格排除「法律意见」「核查意见」「内部控制」「审计委员会」等噪声
+- **拿不到时返回空，绝不臆测为「标准无保留意见」** —— 把未知当安全是最危险的
+- `RiskResult.dataGaps` 会如实告知"审计意见未获取"，UI 在无风险时也会提示
+
+### 14.5 公告关键词误报防护（v3.2 重要）
+
+**曾经踩过的坑**：早期直接用「标题 + 分类名」做关键词匹配，导致所有健康公司
+都被判为"存在资金占用风险"。原因是东财公告的 `column_name` 是**栏目分类**
+而非内容判定 ——《非经营性资金占用及其他关联资金往来情况汇总表》是每家公司
+半年报/年报的**例行合规披露**，恰恰是"没有资金占用"的证明文件。
+
+现在采用三层防护：
+
+| 层次 | 规则 |
+|------|------|
+| ① 例行公告标题 | 含「汇总表/专项说明/自查报告/履职情况/法律意见书/会议决议/业绩说明会」→ 整条跳过 |
+| ② 例行分类名 | `NOISE_CATEGORIES` 中的栏目（资金占用、保荐/核查意见、法律意见书…）不参与判定 |
+| ③ 标题优先 | 标题命中才可信；仅由分类命中的「关注」级一律丢弃 |
+
+关键词也做了收紧：移除过宽的 `违规`（会命中"不存在违规情形"），
+`资金占用` 改为更精确的 `非经营性资金占用` / `资金被占用`。
+
+### 14.6 告警阈值设计原则
+
+**宁可漏报，不可误报**。误报会让用户对告警麻木，最终忽略真正的风险信号。
+
+| 判定 | 阈值 | 理由 |
+|------|------|------|
+| 营收断崖 | 同比 < **-50%** | 主业真正崩塌 |
+| 营收连续下滑 | 连续 3 期下降 **且** 最新 < -20% | 单期小幅下滑是正常经营波动（游戏/周期行业尤甚） |
+| 现金流覆盖 | Σ现金流/Σ净利润 < 50% | 利润未转化为现金 |
+| 扣非占比 | < 50% 或为负 | 利润依赖非经常性损益 |
+
+> 实测验证：三七互娱 -14.3%、冰川网络小幅波动属正常行业周期，**不报警**；
+> ST佳缘营收从 3.2 亿骤降至 0.57 亿、连续 6 期现金流为负，**正确报警**。
+
+### 14.7 数据结构
+
+```cpp
+struct CashFlowItem {
+    QString reportDate;
+    double  netCashOperate;    // 经营现金流净额
+    double  totalOperateIncome;// 营业总收入
+    double  incomeYoY;         // 营收同比
+    double  netProfit;         // 归母净利润      (v3.1)
+    double  deductNetProfit;   // 扣非归母净利润  (v3.1)
+    QString auditOpinion;      // 审计意见原文    (v3.1)
+};
+
+struct RiskResult {
+    bool        hasRisk;
+    QStringList hits;       // 公告命中
+    QStringList redFlags;   // 财务红旗
+    QStringList dataGaps;   // 数据缺口提示    (v3.1)
+    bool        auditChecked;// 审计意见是否获取 (v3.1)
+};
+```
+
+---
+
+## 15. 涨跌停规则引擎 (PriceLimit) — v4.0 新增
+
+### 15.1 为什么需要
+
+看盘时若不知道涨停价/跌停价，就无法判断"现在几板"、"离涨停还有多少空间"。
+而 A 股涨跌幅规则**按板块和风险警示状态差异化**，容易记错。
+
+### 15.2 规则表
+
+| 板块 | 代码特征 | 正常 | ST / *ST |
+|------|---------|------|----------|
+| 沪市主板 | 600/601/603/605 | ±10% | **±5%** |
+| 深市主板 | 000/001 | ±10% | **±5%** |
+| 创业板 | 300/301 | ±20% | **±20%** |
+| 科创板 | 688/689 | ±20% | **±20%** |
+| 北交所 | 43/83/87/920 | ±30% | ±30% |
+
+> **最容易搞错的一条**：只有**主板**的 ST 股才缩窄到 ±5%。
+> 创业板/科创板的 ST 股仍是 ±20%。
+>
+> 实例：ST佳缘(301117)，昨收 12.00 → 涨停 **14.40** / 跌停 **9.60**
+> （12.00 × 1.2 / 0.8），已与腾讯官方数据核对一致。
+> 若按"ST=5%"去算会得到 12.60/11.40，完全错误。
+
+### 15.3 浮点舍入陷阱（已修复）
+
+涨跌停价必须精确到分，用浮点乘法会出错：
+
+```
+16.15 × 0.9 = 14.535
+IEEE754 实际存储 → 14.534999999999999964...
+floor(×100 + 0.5) = 1453  →  14.53   ❌ 少一分钱
+正确值 = 14.54
+```
+
+一分钱之差会直接导致"是否封板"误判。现改为**整数分运算**：
+
+```cpp
+int64_t limitCents(int64_t prevCloseCents, int limitPct, int sign) {
+    const int64_t numerator = prevCloseCents * (100 + sign * limitPct);
+    return (numerator + 50) / 100;   // 四舍五入到分
+}
+```
+
+### 15.4 UI 呈现
+
+主表新增 **涨停价 / 跌停价** 两列：
+
+- 正常：涨红跌绿文字
+- **封板时：实心色块**（涨停红底白字、跌停绿底白字），一眼可见
+- 悬停显示规则说明（如"创业板 · ST · 涨跌幅限制 ±20%"）
+
+---
+
+## 16. 分时图 (TimeShare) — v4.0 新增
+
+### 16.1 之前的问题
+
+「分时」下拉项实际调用 `klt=5`（5 分钟 K 线），**并非真正的分时图**。
+
+### 16.2 与 K 线的本质区别
+
+| 维度 | K 线图 | 分时图 |
+|------|--------|--------|
+| 横轴 | 按数据条数 | **固定 240 格**（全天交易分钟） |
+| 数据不足时 | 压缩显示 | **右侧留白**，直观看出"走到一天哪个位置" |
+| 午休 | 不存在 | **不占横轴**（11:30 与 13:00 共用 slot 120） |
+| 价格轴 | 按最高最低自适应 | **以昨收为对称中心**，0% 恒在正中 |
+
+### 16.3 槽位映射
+
+```
+09:30 → slot 0      11:30 → slot 120
+13:00 → slot 120    15:00 → slot 240
+午休/盘前/盘后 → -1（不绘制）
+```
+
+### 16.4 绘制要素
+
+- 价格线（白） + 均价线（黄）
+- 昨收基准虚线（0.00% 位置）
+- 涨跌填充（红涨绿跌，半透明）
+- 成交量柱（按分钟涨跌着色）
+- **左轴价格 + 右轴整数百分比**（+2% / +1% / 0% / -1% / -2%）
+- 十字光标带价格/时间/数据浮标
+
+### 16.5 两种数据源格式
+
+| 源 | 格式 | 处理 |
+|----|------|------|
+| 东财 trends2 | `时间,开,收,高,低,量,额,均价` | 直接解析 |
+| **腾讯 minute**（主用） | `HHmm 价格 累计量 累计额` | 需做差求每分钟量；均价 = 累计额/(累计量×100) |
+
+> 腾讯"量"单位是手(100股)，"额"是元，算均价时量要 ×100。
+
+### 16.6 价格范围对齐
+
+价格范围按**整数百分比**对齐（±1%/±2%/±5%/±10%），使刻度恰好落在绘图区边缘：
+既不留白、也不裁切曲线。早期版本未对齐，曾出现曲线超出绘图区被裁掉。
+
+---
+
+## 17. 板块联动与相对强度 (Sector) — v4.0 新增
+
+### 17.1 为什么这是最重要的维度
+
+A 股个股涨跌约 60% 由板块决定。同样的 +3%，含义可能完全不同：
+
+| 情形 | 板块 | 个股 | 解读 |
+|------|------|------|------|
+| **领涨** | +0.5% | +6% | 有独立逻辑/资金，持续性更好 |
+| **同步** | +2.6% | +3.1% | 走势由板块驱动 |
+| **拖累** | +5% | +1% | 板块涨它不涨，警惕个股自身问题 |
+
+### 17.2 入口与数据
+
+右键 → **🧩 板块联动**，数据来自东财 `slist` 接口：
+
+```
+GET push2.eastmoney.com/api/qt/slist/get
+  spt=3  secid=0.002555  fields=f12,f13,f14,f3
+返回: [{f12:"BK1046", f14:"游戏Ⅱ", f3:2.62}, ...]
+```
+
+### 17.3 主板块选择规则
+
+1. **优先行业板块**（真正代表赛道）；多个时取更细分的（游戏Ⅲ 优于 游戏Ⅱ）
+2. 无行业板块 → 选名称带「概念」的概念板块
+3. **地域板块永不作为主板块**（它不决定个股走势）
+
+### 17.4 相对强度判定
+
+相对强度 = 个股涨幅 − 主板块涨幅（百分点）
+
+| 差值 | 判定 |
+|------|------|
+| ≥ +3 | 领涨 |
+| +1 ~ +3 | 略强 |
+| -1 ~ +1 | 同步 |
+| -3 ~ -1 | 略弱 |
+| ≤ -3 | 拖累 |
+
+### 17.5 板块类型识别
+
+| 类型 | 识别规则 |
+|------|---------|
+| 地域 | 名称以「板块」结尾且 ≤8 字（安徽板块） |
+| 行业 | 带罗马数字后缀（游戏Ⅱ/Ⅲ）+ 白名单（传媒/电力/证券…） |
+| 概念 | 其余（网络游戏、元宇宙概念…） |
+
+> 东财部分行业板块名称不带罗马数字（传媒、电力），因此维护了行业白名单。
+
+### 17.6 窗口设计
+
+`SectorDialog` 独立成类（而非塞在 MainWindow 内），好处：
+
+- MainWindow 已 1555 行，继续堆积难维护
+- 可脱离主窗口**单独离屏渲染**（`test_sector_ui.cpp`），便于视觉验证
+
+---
+
+## 18. 算法验证（离线测试）
+
+六个纯逻辑测试套件（**不参与主工程构建**），合计 **272 项**：
+
+| 文件 | 验证内容 | 用例数 |
+|------|---------|--------|
+| `test_holdingcalc.cpp` | 移动加权平均、费用模型、盈亏分离、超卖保护 | 43 |
+| `test_tradingcalendar.cpp` | 节假日判断、前后交易日推算、盘中阶段边界 | 36 |
+| `test_pricelimit.cpp` | 板块识别、涨跌停价、浮点舍入边界 | 44 |
+| `test_timesharedata.cpp` | 槽位映射、双格式解析、累计量转每分钟 | 54 |
+| `test_sectordata.cpp` | 板块分类、主板块选择、相对强度判定 | 44 |
+| `test_riskscanner.cpp` | 审计意见分类与误判防护、扣非占比、现金流覆盖 | 51 |
+
+两个离屏渲染工具（视觉验证，非断言测试）：
+
+| 文件 | 用途 |
+|------|------|
+| `test_grab.cpp` | 渲染分时图 → `_grab.png` |
+| `test_sector_ui.cpp` | 渲染板块窗口 → `_sector_ui.png` |
+
+> **为什么需要离屏渲染工具**：`PrintWindow` 对 Qt 窗口常返回全黑或旧帧，
+> 无法可靠验证绘制结果。用 `QWidget::grab()` 配合 `QT_QPA_PLATFORM=offscreen`
+> 才能稳定拿到真实渲染图。
+
+**编译运行**（在工程根目录）：
+
+```bat
+set QT=F:\Qt\Qt5.9.7\5.9.7\mingw53_32
+g++ -std=gnu++11 -O1 -I. -I%QT%/include/QtCore -I%QT%/include ^
+    -I%QT%/mkspecs/win32-g++ ^
+    test_holdingcalc.cpp holdingcalc.cpp -o t.exe -L%QT%/lib -lQt5Core
+t.exe
+```
+
+需要 moc 的套件（风险扫描、板块窗口）：
+
+```bat
+moc riskscanner.h  -o release\moc_riskscanner.cpp
+moc sectordialog.h -o release\moc_sectordialog.cpp
+```
+
+离屏渲染工具还需要：
+
+```bat
+set QT_QPA_PLATFORM=offscreen
+set QT_QPA_FONTDIR=C:\Windows\Fonts    :: 否则文字不渲染
+set QT_PLUGIN_PATH=%QT%\plugins
+```
+
+> 修改 `holdingcalc.cpp` / `tradingcalendar.cpp` / `pricelimit.cpp` /
+> `timesharedata.cpp` / `sectordata.cpp` / `riskscanner.cpp` 后**务必重跑**，
+> 这些文件的正确性直接决定账本数字、休市判断、涨停价、分时图与风险预警是否可信。
+
+---
+
+## 19. 构建与打包注意事项
+
+### 19.1 `repackage.bat` 编码要求（重要）
+
+该脚本是 **GBK 编码 + CRLF 换行**：
+
+| 错误做法 | 后果 |
+|---------|------|
+| UTF-8 保存 | `cmd` 按 GBK 解析，中文命令被打散，脚本全程报"命令不存在" |
+| LF 换行 | `cmd` 无法正确分行，整个脚本失效 |
+
+编辑器若将其改成 UTF-8/LF，**必须改回 GBK+CRLF** 才能运行。
+脚本内使用 `chcp 936`（而非 65001）。
+
+### 19.2 OpenSSL DLL 来源
+
+`windeployqt` 不会打包 OpenSSL。脚本按以下顺序查找：
+
+1. `release\libeay32.dll` / `ssleay32.dll`（手工放置）
+2. `%QT_DIR%\Tools\mingw530_32\opt\bin\`（**Qt 安装自带，版本匹配，推荐**）
+3. `%QT_DIR%\Tools\QtCreator\bin\`
+
+> 注意：不要从其他第三方软件目录（如 Sangfor、FlashFXP）拷贝
+> `libeay32.dll`，版本与 Qt 5.9.7 不匹配会导致 HTTPS 崩溃或握手失败。
+> 若确实缺失，程序会自动降级到腾讯 HTTP 源（见数据源容错链）。
